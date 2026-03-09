@@ -1,0 +1,10 @@
+/.idea
+/target
+/src/lin_al
+/src/engine
+/src/runtime
+/glex-shader-macro
+/glex-shader-types
+/debug_glsl
+/glex-platform
+/Docs

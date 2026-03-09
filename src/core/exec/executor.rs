@@ -1,0 +1,495 @@
+use {
+	crate::{
+		core::{
+			DeviceOps,
+			exec::{
+				FrameGraph,
+				PipelineManager,
+				RenderRecorder2D,
+				TransferRecorder,
+				ComputeRecorder,
+				ExecutionOrder,
+				recorder::PassRecord,
+				lane::WorkLane,
+				frame::{CompiledPass, BarrierEdge},
+			},
+			resource::{
+				img_state,
+				SwapchainImage,
+				ImageView,
+			},
+			backend::{
+				Backend, SemaphoreSubmit,
+				ImageBarrierInfo, BufferBarrierInfo2,
+				types::{Extent2D, ImageAspect},
+			},
+			render::RenderingInfoBuilder,
+			type_state_queue::{Graphics, Compute, Transfer},
+			barrier::{resolve_barrier, BarrierDesc},
+			type_state_queue::Queue,
+		},
+		
+		domain::{PassId, PassDomain, ResourceHandle, Stage, Access, GraphError, ResourceDecl},
+	},
+	std::collections::HashMap,
+};
+
+pub struct Executor<'dev, B: Backend> {
+	device: &'dev B::Device,
+	graphics: Option<WorkLane<'dev, Queue<Graphics, B>, B>>,
+	compute: Option<WorkLane<'dev, Queue<Compute, B>, B>>,
+	transfer: Option<WorkLane<'dev, Queue<Transfer, B>, B>>,
+	present_sync: Option<PresentSync<B>>,
+}
+
+pub struct RenderTarget<'a, B: Backend> {
+	pub color_view: &'a ImageView<'a, B>,
+	pub extent: Extent2D,
+	pub clear_color: [f32; 4],
+}
+
+pub struct PresentSync<B: Backend> {
+	pub wait_acquire: B::Semaphore,
+	pub signal_render_finished: B::Semaphore,
+}
+// ── Barrier helpers ──────────────────────────────────────────
+
+fn build_image_barrier<B: Backend>(desc: &BarrierDesc, image: B::Image) -> ImageBarrierInfo<B> {
+	ImageBarrierInfo {
+		image,
+		old_layout: desc.src_usage.layout(),
+		new_layout: desc.dst_usage.layout(),
+		src_stage: desc.src_usage.stage(),
+		src_access: desc.src_usage.access(),
+		dst_stage: desc.dst_usage.stage(),
+		dst_access: desc.dst_usage.access(),
+		aspect: ImageAspect::Color,
+		src_queue_family: desc.src_queue_family,
+		dst_queue_family: desc.dst_queue_family,
+	}
+}
+fn build_buffer_barrier<B: Backend>(desc: &BarrierDesc, buffer: B::Buffer) -> BufferBarrierInfo2<B> {
+	BufferBarrierInfo2 {
+		buffer,
+		src_stage: desc.src_usage.stage().into(),
+		src_access: desc.src_usage.access().into(),
+		dst_stage: desc.dst_usage.stage().into(),
+		dst_access: desc.dst_usage.access().into(),
+		src_queue_family: desc.src_queue_family.into(),
+		dst_queue_family: desc.dst_queue_family.into(),
+	}
+}
+
+enum BarrierSide { Acquire, Release }
+fn collect_barriers<B: Backend>(
+	side: BarrierSide,
+	barriers: &[BarrierEdge],
+	pass_id: PassId,
+	resources: &[ResourceDecl],
+	family_for: impl Fn(PassDomain) -> u32,
+) -> (Vec<ImageBarrierInfo<B>>, Vec<BufferBarrierInfo2<B>>) {
+	let mut imgs = Vec::new();
+	let mut bufs = Vec::new();
+	
+	let edges: Vec<_> = match side {
+		BarrierSide::Acquire => barriers.iter().filter(|b| b.to_pass == pass_id).collect(),
+		BarrierSide::Release => barriers.iter().filter(|b| b.from_pass == pass_id && b.is_cross_queue()).collect(),
+	};
+	
+	for b in edges {
+		let resolved = resolve_barrier(b, &family_for);
+		let res = resources.iter().find(|r| r.id == resolved.resource).expect("resource missing");
+		let is_cross = b.is_cross_queue();
+		
+		match res.handle {
+			ResourceHandle::Image(raw) => {
+				let mut bar = build_image_barrier::<B>(&resolved, B::image_from_raw(raw));
+				
+				match side {
+					BarrierSide::Acquire if is_cross => {
+						bar.src_stage = Stage::None;
+						bar.src_access = Access::None;
+					}
+					BarrierSide::Release => {
+						bar.dst_stage = Stage::None;
+						bar.dst_access = Access::None;
+					}
+					_ => {}
+				}
+				imgs.push(bar);
+			}
+			ResourceHandle::Buffer(raw) => {
+				let mut bar = build_buffer_barrier::<B>(&resolved, B::buffer_from_raw(raw));
+				match side {
+					BarrierSide::Acquire if is_cross => {
+						bar.src_stage = Stage::None.into();
+						bar.src_access = Access::None.into();
+					}
+					BarrierSide::Release => {
+						bar.dst_stage = Stage::None.into();
+						bar.dst_access = Access::None.into();
+					}
+					_ => {}
+				}
+				bufs.push(bar);
+			}
+		}
+	}
+	
+	(imgs, bufs)
+}
+fn present_sync_submits<B: Backend>(
+	sync: &Option<PresentSync<B>>,
+	is_first: bool,
+	is_last: bool,
+) -> (Vec<SemaphoreSubmit<B>>, Vec<SemaphoreSubmit<B>>) {
+	let mut waits = Vec::new();
+	let mut signals = Vec::new();
+	
+	if let Some(ps) = sync {
+		if is_first {
+			waits.push(SemaphoreSubmit {
+				semaphore: ps.wait_acquire,
+				value: 0,
+				stage: Stage::ColorOutput,
+			});
+		}
+		if is_last {
+			signals.push(SemaphoreSubmit {
+				semaphore: ps.signal_render_finished,
+				value: 0,
+				stage: Stage::All,
+			});
+		}
+	}
+	
+	(waits, signals)
+}
+
+
+impl<'dev, B: Backend> Executor<'dev, B> {
+	pub fn new(device: &'dev B::Device) -> Self {
+		Self {
+			device,
+			graphics: None,
+			compute: None,
+			transfer: None,
+			present_sync: None,
+		}
+	}
+	
+	
+	pub fn attach_graphics(&mut self, queue: Queue<Graphics, B>) -> Result<(), B::Error> {
+		self.graphics = Some(WorkLane::new(self.device, queue)?);
+		Ok(())
+	}
+	
+	pub fn attach_compute(&mut self, queue: Queue<Compute, B>) -> Result<(), B::Error> {
+		self.compute = Some(WorkLane::new(self.device, queue)?);
+		Ok(())
+	}
+	
+	pub fn device(&self) -> &'dev B::Device {
+		self.device
+	}
+	
+	pub fn attach_transfer(&mut self, queue: Queue<Transfer, B>) -> Result<(), B::Error> {
+		self.transfer = Some(WorkLane::new(self.device, queue)?);
+		Ok(())
+	}
+	
+	pub fn graphics_lane(&self) -> &WorkLane<'dev, Queue<Graphics, B>, B> {
+		self.graphics.as_ref().expect("no graphics lane")
+	}
+	
+	pub fn graphics_lane_mut(&mut self) -> &mut WorkLane<'dev, Queue<Graphics, B>, B> {
+		self.graphics.as_mut().expect("no graphics lane")
+	}
+	
+	pub fn compute_lane(&self) -> &WorkLane<'dev, Queue<Compute, B>, B> {
+		self.compute.as_ref().expect("no compute lane")
+	}
+	
+	pub fn compute_lane_mut(&mut self) -> &mut WorkLane<'dev, Queue<Compute, B>, B> {
+		self.compute.as_mut().expect("no compute lane")
+	}
+	
+	pub fn transfer_lane(&self) -> &WorkLane<'dev, Queue<Transfer, B>, B> {
+		self.transfer.as_ref().expect("no transfer lane")
+	}
+	
+	pub fn transfer_lane_mut(&mut self) -> &mut WorkLane<'dev, Queue<Transfer, B>, B> {
+		self.transfer.as_mut().expect("no transfer lane")
+	}
+	
+	pub fn has_transfer(&self) -> bool {
+		self.transfer.is_some()
+	}
+	
+	pub fn has_compute(&self) -> bool {
+		self.compute.is_some()
+	}
+	
+	
+	fn timeline_handle_for(&self, domain: PassDomain) -> B::Semaphore {
+		match domain {
+			PassDomain::Graphics => self.graphics_lane().timeline_handle(),
+			PassDomain::Compute => self.compute_lane().timeline_handle(),
+			PassDomain::Transfer => self.transfer_lane().timeline_handle(),
+		}
+	}
+	
+	fn family_for(&self, domain: PassDomain) -> u32 {
+		match domain {
+			PassDomain::Graphics => self.graphics_lane().family(),
+			PassDomain::Compute => self.compute_lane().family(),
+			PassDomain::Transfer => self.transfer_lane().family(),
+		}
+	}
+	
+	pub fn set_present_sync(&mut self, sync: PresentSync<B>) {
+		self.present_sync = Some(sync);
+	}
+	
+	pub fn graphics_timeline_handle(&self) -> B::Semaphore {
+		self.graphics_lane().timeline_handle()
+	}
+	
+	pub fn execute<'f>(
+		&mut self,
+		graph: FrameGraph<'f, B>,
+		swap_img: SwapchainImage<'dev, img_state::Undefined, B>,
+		target: RenderTarget<'_, B>,
+		pipelines: &PipelineManager<'dev, B>,
+	) -> Result<u64, GraphError> {
+		let compiled = graph.compile()?;
+		
+		let ExecutionOrder { ordered_passes, barriers } = compiled.order;
+		let mut passes: HashMap<PassId, CompiledPass<'f, B>> = compiled.passes.into_iter().map(|p| (p.id, p)).collect();
+		let resources = compiled.resources;
+		
+		let mut final_graphics_val: u64 = 0;
+		
+		let mut swap_img: Option<SwapchainImage<'dev, img_state::Undefined, B>> = Some(swap_img);
+		let mut color_img: Option<SwapchainImage<'dev, img_state::ColorAttachment, B>> = None;
+		let mut pass_signals: HashMap<PassId, (u64, PassDomain)> = HashMap::new();
+		
+		let first_gfx = ordered_passes
+			.iter()
+			.find(|&&pid| passes
+				.get(&pid)
+				.map(|p| p.domain == PassDomain::Graphics)
+				.unwrap_or(false)).copied();
+		
+		let last_gfx = ordered_passes
+			.iter()
+			.rev()
+			.find(|&&pid| passes
+				.get(&pid).map(|p| p.domain == PassDomain::Graphics)
+				.unwrap_or(false)).copied();
+		
+		for &pass_id in &ordered_passes {
+			let pass = passes.remove(&pass_id).expect("compiled pass missing");
+			
+			let domain = pass.domain;
+			let pass_pipeline = pass.pipeline;
+			let descriptor_set = pass.descriptor_set;
+			let record = pass.record;
+			
+			// ── Gather waits ──────────────────────────────────
+			let mut waits: Vec<(B::Semaphore, u64)> = Vec::new();
+			
+			let (lane_sem, lane_prev) = match domain {
+				PassDomain::Graphics => {
+					let l = self.graphics.as_ref().expect("no graphics lane");
+					(l.timeline_handle(), l.last_signal_value())
+				}
+				PassDomain::Compute => {
+					let l = self.compute.as_ref().expect("no compute lane");
+					(l.timeline_handle(), l.last_signal_value())
+				}
+				PassDomain::Transfer => {
+					let l = self.transfer.as_ref().expect("no transfer lane");
+					(l.timeline_handle(), l.last_signal_value())
+				}
+			};
+			
+			if lane_prev > 0 {
+				waits.push((lane_sem, lane_prev));
+			}
+			
+			for barrier in &barriers {
+				if barrier.to_pass == pass_id {
+					if let Some(&(src_val, src_domain)) = pass_signals.get(&barrier.from_pass) {
+						if src_domain != domain {
+							let src_sem = self.timeline_handle_for(src_domain);
+							if let Some(existing) = waits.iter_mut().find(|(s, _)| *s == src_sem) {
+								existing.1 = existing.1.max(src_val);
+							} else {
+								waits.push((src_sem, src_val));
+							}
+						}
+					}
+				}
+			}
+			
+			// ── Barriers ─────────────────────────────────────
+			let (img_bars, buf_bars) = collect_barriers::<B>(
+				BarrierSide::Acquire, &barriers, pass_id, &resources, |d|
+					self.family_for(d),
+			);
+			let (rel_img, rel_buf) = collect_barriers::<B>(
+				BarrierSide::Release, &barriers, pass_id, &resources, |d|
+					self.family_for(d),
+			);
+			
+			// ── Present sync ─────────────────────────────────
+			let is_first = first_gfx == Some(pass_id);
+			let is_last = last_gfx == Some(pass_id);
+			
+			let (bin_waits, bin_signals) = if domain == PassDomain::Graphics {
+				present_sync_submits(&self.present_sync, is_first, is_last)
+			} else {
+				(Vec::new(), Vec::new())
+			};
+			// ── Record + submit ───────────────────────────────
+			let signal_val = match record {
+				PassRecord::Compute(closure) => {
+					let lane = self.compute.as_mut().expect("no compute lane");
+					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e| GraphError::backend(e))?;
+					
+					if !img_bars.is_empty() || !buf_bars.is_empty() {
+						cmd.image_barrier(&img_bars);
+						cmd.buffer_barrier(&buf_bars);
+					}
+					
+					let mut active_layout = None;
+					if let Some(id) = pass_pipeline {
+						cmd.bind_compute_pipeline(pipelines.handle(id));
+						active_layout = Some(pipelines.layout(id));
+					}
+					
+					let mut recorder = ComputeRecorder {
+						cmd: &cmd,
+						pipelines,
+						layout: active_layout,
+					};
+					if let Some(set) = descriptor_set {
+						recorder.bind_compute_descriptor_set_raw(set);
+					}
+					closure(&mut recorder);
+					
+					if !rel_img.is_empty() || !rel_buf.is_empty() {
+						cmd.image_barrier(&rel_img);
+						cmd.buffer_barrier(&rel_buf);
+					}
+					let executable = cmd.end().map_err(|e| GraphError::backend(e))?;
+					lane.submit(self.device, executable, &waits).map_err(|e| GraphError::backend(e))?
+				}
+				
+				PassRecord::Transfer(closure) => {
+					let lane = self.transfer.as_mut().expect("no transfer lane");
+					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e| GraphError::backend(e))?;
+					
+					if !img_bars.is_empty() || !buf_bars.is_empty() {
+						cmd.image_barrier(&img_bars);
+						cmd.buffer_barrier(&buf_bars);
+					}
+					
+					let mut recorder = TransferRecorder { cmd: &cmd };
+					closure(&mut recorder);
+					
+					if !rel_img.is_empty() || !rel_buf.is_empty() {
+						cmd.image_barrier(&rel_img);
+						cmd.buffer_barrier(&rel_buf);
+					}
+					let executable = cmd.end().map_err(|e| GraphError::backend(e))?;
+					lane.submit(self.device, executable, &waits).map_err(|e| GraphError::backend(e))?
+				}
+				
+				PassRecord::Graphics(closure) => {
+					let lane = self.graphics.as_mut().expect("no graphics lane");
+					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e| GraphError::backend(e))?;
+					
+					if !img_bars.is_empty() || !buf_bars.is_empty() {
+						cmd.image_barrier(&img_bars);
+						cmd.buffer_barrier(&buf_bars);
+					}
+					
+					if is_first {
+						let si = swap_img.take().expect("first gfx pass but swapchain already taken");
+						color_img = Some(si.into_color_attachment(&cmd));
+					}
+					
+					let mut builder = RenderingInfoBuilder::new(target.extent);
+					if is_first {
+						builder = builder.color_clear(target.color_view,
+							target.clear_color);
+					} else {
+						builder = builder.color_load(target.color_view);
+					}
+					let rendering_info = builder.build();
+					
+					let inside = cmd.begin_rendering(&rendering_info);
+					inside.set_viewport(target.extent);
+					inside.set_scissor(target.extent);
+					
+					let mut active_layout = None;
+					if let Some(id) = pass_pipeline {
+						inside.bind_graphics_pipeline(pipelines.handle(id));
+						active_layout = Some(pipelines.layout(id));
+					}
+					
+					let mut recorder = RenderRecorder2D::new(&inside, pipelines,
+						active_layout);
+					if let Some(set) = descriptor_set {
+						recorder.bind_descriptor_set_raw(set);
+					}
+					closure(&mut recorder);
+					
+					let outside = inside.end_rendering();
+					
+					if is_last {
+						let ci = color_img.take().expect("last gfx pass but no color attachment");
+						let _present = ci.into_present_src(&outside);
+					}
+					
+					if !rel_img.is_empty() || !rel_buf.is_empty() {
+						outside.image_barrier(&rel_img);
+						outside.buffer_barrier(&rel_buf);
+					}
+					let executable = outside.end().map_err(|e| GraphError::backend(e))?;
+					
+					if bin_waits.is_empty() && bin_signals.is_empty() {
+						lane.submit(self.device, executable, &waits).map_err(|e| GraphError::backend(e))?
+					} else {
+						lane.submit_with_binary(
+							self.device, executable, &waits,
+							&bin_waits, &bin_signals,
+						).map_err(|e| GraphError::backend(e))?
+					}
+				}
+			};
+			
+			pass_signals.insert(pass_id, (signal_val, domain));
+			if domain == PassDomain::Graphics {
+				final_graphics_val = signal_val;
+			}
+		}
+		Ok(final_graphics_val)
+	}
+	
+	pub fn signal_after_present(
+		&mut self,
+		render_sem: B::Semaphore,
+	) -> Result<u64, B::Error> {
+		let (next_val, timeline, queue) = {
+			let lane = self.graphics_lane_mut();
+			(lane.last_signal_value(), lane.timeline_handle(), lane.queue_handle())
+		};
+		let waits = [SemaphoreSubmit { semaphore: render_sem, value: 0, stage: Stage::All }];
+		let signals = [SemaphoreSubmit { semaphore: timeline, value: next_val, stage: Stage::All }];
+		self.device.queue_submit2(queue, None, &waits, &signals)?;
+		Ok(next_val)
+	}
+}

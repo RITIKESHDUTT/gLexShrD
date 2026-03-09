@@ -1,0 +1,39 @@
+[workspace]
+members = [".", "glex-platform", "glex-shader-macro", "glex-shader-types"]
+
+[package]
+name = "gLexShrD"
+version = "0.1.0"
+edition = "2024"
+keywords = ["vulkan", "graphics", "rendering", "framegraph", "gpu", "linear-algebra", "math-engine", "visualization", "renderer", "game-engine", "real-time", "compute", "shader", "gpu-compute", "graphics-engine"]
+
+categories = [
+    "graphics",
+    "rendering",
+    "game-engines",
+    "science",
+    "simulation"
+]
+
+[workspace.dependencies]
+ash = { version = "0.38.0", default-features = false, features = ["std", "loaded"] }
+thiserror = "2.0.18"
+crossbeam-queue = "0.3"
+
+[dependencies]
+thiserror = "2.0.18"
+ash = { version = "0.38.0", default-features = false, features = ["std", "loaded"] }
+pkg-config = "0.3.32"
+glex-shader-macro = { path = "glex-shader-macro" }
+glex-shader-types = { path = "glex-shader-types" }
+glex-platform = { path = "glex-platform" }
+
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
