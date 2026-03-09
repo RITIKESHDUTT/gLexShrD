@@ -19,6 +19,8 @@ categories = [
 ash = { version = "0.38.0", default-features = false, features = ["std", "loaded"] }
 thiserror = "2.0.18"
 crossbeam-queue = "0.3"
+bitflags = "2.11.0"
+
 
 [dependencies]
 thiserror = "2.0.18"
@@ -27,6 +29,7 @@ pkg-config = "0.3.32"
 glex-shader-macro = { path = "glex-shader-macro" }
 glex-shader-types = { path = "glex-shader-types" }
 glex-platform = { path = "glex-platform" }
+bitflags = "2.11.0"
 
 
 [profile.dev]

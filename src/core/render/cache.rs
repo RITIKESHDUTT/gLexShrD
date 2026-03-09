@@ -134,7 +134,7 @@ impl<'dev, B: Backend> PipelineManager<'dev, B>
 		let handle = self.device.create_graphics_pipeline(&pipeline_desc)?;
 		Ok(PipelineSlot { handle, layout })
 	}
-	fn create_compute(
+	pub fn create_compute(
 		&self,
 		desc_layouts: &[B::DescriptorSetLayout],
 		push_ranges: &[PushConstantRange],
