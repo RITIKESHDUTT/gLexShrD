@@ -11,28 +11,81 @@ body:
       required: true
 
   - type: textarea
+<<<<<<< HEAD
     id: expected
     attributes:
       label: Expected behavior
       placeholder: What should have happened instead?
+=======
+    id: observed
+    attributes:
+        label: Observed behavior
+        description: |
+          What the system actually does.
+          Include the state transition path that triggers the violation.
+        placeholder: |
+          1. State before: ...
+          2. Transition: ...
+          3. State after (violating): ...
+    validations:
+        required: true
+
+  - type: dropdown
+    id: failure_class
+    attributes:
+      label: Failure class
+      options:
+        - Safety (UB, use-after-free, data race)
+        - Correctness (wrong result, violated contract)
+        - Resource (leak, exhaustion, starvation)
+        - Performance (latency, throughput degradation)
+        - Liveness (deadlock, livelock, stall)
+>>>>>>> 621de0c (add issue template)
     validations:
       required: true
 
   - type: textarea
+<<<<<<< HEAD
     id: reproduce
     attributes:
       label: Steps to reproduce
       placeholder: |
         1. ...
         2. ...
+=======
+    id: boundary
+    attributes:
+      label: System boundary
+      description: |
+        Which module or subsystem boundary does this cross?
+        What is inside vs outside the failure?
+      placeholder: "e.g., Failure is inside core/exec — executor trusts PassDecl invariants that frame.rs does not enforce."
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraint
+    attributes:
+      label: Missing or weak constraint
+      description: |
+        What constraint, if present and enforced, would make this failure impossible?
+        Remove it — what becomes unsafe. Strengthen it — what becomes impossible.
+>>>>>>> 621de0c (add issue template)
     validations:
       required: false
 
   - type: textarea
+<<<<<<< HEAD
     id: logs
     attributes:
       label: Logs / validation output
       render: text
       placeholder: Paste any relevant output, validation layer messages, or panic traces.
+=======
+    id: traces
+    attributes:
+      label: Logs / traces / validation output
+      render: text
+>>>>>>> 621de0c (add issue template)
     validations:
       required: false

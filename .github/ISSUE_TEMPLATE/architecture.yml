@@ -5,7 +5,6 @@ body:
     - type: textarea
       id: invariant
       attributes:
-        label: Invariant
         description: |
           Property the system must always satisfy.
           This must remain true before and after the change.
@@ -17,7 +16,6 @@ body:
       attributes:
         label: Current design
         description: |
-         Describe the current design state and why the invariant is violated or unclear.
       validations:
         required: true
 
@@ -26,7 +24,6 @@ body:
       attributes:
         label: Proposed design
         description: |
-          Specify concrete types, fields, modules, and ownership edges introduced, removed, or re-oriented.
       validations:
         required: true
 

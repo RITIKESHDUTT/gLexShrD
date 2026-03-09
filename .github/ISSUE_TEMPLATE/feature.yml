@@ -1,0 +1,74 @@
+name: Capability
+description: Introduce a new capability into the system.
+labels: ["feature"]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: |
+        What the system must be able to do that it currently cannot.
+        State as a concrete operation, not an abstract desire.
+      placeholder: "e.g., The engine must emit PassCommands from a dirty Scene without requiring user closures."
+    validations:
+      required: true
+
+  - type: textarea
+    id: impossibility
+    attributes:
+      label: Current impossibility
+      description: |
+        Why can't the system do this today?
+        Identify the specific structural absence — missing type, missing state transition, missing information flow.
+      placeholder: "e.g., FrameGraph has no data representation for draw commands — only opaque FnOnce closures."
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraint interaction
+      description: |
+        Which existing constraints does this capability interact with?
+        For each: remove it → what becomes trivial or unsafe. Strengthen it → what becomes impossible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: representation
+    attributes:
+      label: Proposed representation
+      description: |
+        Concrete types, ownership, state transitions.
+        Express as at least one of: state machine, graph, spatial/topological model, or formal model.
+        If it cannot be drawn, understanding is insufficient.
+    validations:
+      required: true
+
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariants after introduction
+      description: |
+        Properties the system must satisfy with this capability present.
+        Include: what must be serialized, what cannot be concurrent, where information crosses boundaries.
+    validations:
+      required: false
+
+  - type: textarea
+    id: failure_modes
+    attributes:
+      label: Failure modes introduced
+      description: |
+        What new failures become possible?
+        For each: likelihood, cost, and the constraint that prevents it.
+    validations:
+      required: false
+
+  - type: textarea
+    id: affected
+    attributes:
+      label: Affected files / modules
+      description: In dependency order.
+    validations:
+      required: false
