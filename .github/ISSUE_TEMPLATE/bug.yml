@@ -1,34 +1,32 @@
-name: Bug
-description: Report a defect where the system violates an expected property or behavior.
-labels: ["bug"]
+name: Defect
+description: The system violates a property that must hold.
+labels: ["defect"]
 body:
   - type: textarea
-    id: description
+    id: invariant
     attributes:
-      label: What happened?
-      placeholder: Describe the bug.
+      label: Violated invariant
+      description: |
+        The property the system must satisfy but currently does not.
+        State it as a predicate, not a symptom.
+      placeholder: "e.g., Every submitted PassCommand must reference a ResourceId that was declared in the same
+  FrameGraph."
     validations:
       required: true
 
   - type: textarea
-<<<<<<< HEAD
-    id: expected
-    attributes:
-      label: Expected behavior
-      placeholder: What should have happened instead?
-=======
     id: observed
     attributes:
-        label: Observed behavior
-        description: |
-          What the system actually does.
-          Include the state transition path that triggers the violation.
-        placeholder: |
-          1. State before: ...
-          2. Transition: ...
-          3. State after (violating): ...
+      label: Observed behavior
+      description: |
+        What the system actually does.
+        Include the state transition path that triggers the violation.
+      placeholder: |
+        1. State before: ...
+        2. Transition: ...
+        3. State after (violating): ...
     validations:
-        required: true
+      required: true
 
   - type: dropdown
     id: failure_class
@@ -40,26 +38,18 @@ body:
         - Resource (leak, exhaustion, starvation)
         - Performance (latency, throughput degradation)
         - Liveness (deadlock, livelock, stall)
->>>>>>> 621de0c (add issue template)
     validations:
       required: true
 
   - type: textarea
-<<<<<<< HEAD
-    id: reproduce
-    attributes:
-      label: Steps to reproduce
-      placeholder: |
-        1. ...
-        2. ...
-=======
     id: boundary
     attributes:
       label: System boundary
       description: |
         Which module or subsystem boundary does this cross?
         What is inside vs outside the failure?
-      placeholder: "e.g., Failure is inside core/exec — executor trusts PassDecl invariants that frame.rs does not enforce."
+      placeholder: "e.g., Failure is inside core/exec — executor trusts PassDecl invariants that frame.rs does not
+  enforce."
     validations:
       required: true
 
@@ -70,22 +60,13 @@ body:
       description: |
         What constraint, if present and enforced, would make this failure impossible?
         Remove it — what becomes unsafe. Strengthen it — what becomes impossible.
->>>>>>> 621de0c (add issue template)
     validations:
       required: false
 
   - type: textarea
-<<<<<<< HEAD
-    id: logs
-    attributes:
-      label: Logs / validation output
-      render: text
-      placeholder: Paste any relevant output, validation layer messages, or panic traces.
-=======
     id: traces
     attributes:
       label: Logs / traces / validation output
       render: text
->>>>>>> 621de0c (add issue template)
     validations:
       required: false
