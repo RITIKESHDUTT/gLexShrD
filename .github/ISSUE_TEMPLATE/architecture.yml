@@ -1,0 +1,59 @@
+name: Architecture Change
+description: Structural change to types, ownership, synchronization, or module boundaries.
+labels: ["architecture"]
+body:
+    - type: textarea
+      id: invariant
+      attributes:
+        label: Invariant
+        description: |
+          Property the system must always satisfy.
+          This must remain true before and after the change.
+      validations:
+        required: true
+
+    - type: textarea
+      id: current
+      attributes:
+        label: Current design
+        description: |
+         Describe the current design state and why the invariant is violated or unclear.
+      validations:
+        required: true
+
+    - type: textarea
+      id: proposed
+      attributes:
+        label: Proposed design
+        description: |
+          Specify concrete types, fields, modules, and ownership edges introduced, removed, or re-oriented.
+      validations:
+        required: true
+
+    - type: textarea
+      id: formal_effect
+      attributes:
+        label: Result
+        description: |
+          System properties after the change:
+          determinism, safety guarantees, dependency visibility,
+          compile-time constraints, or execution ordering guarantees.
+      validations:
+        required: false
+
+    - type: textarea
+      id: affected
+      attributes:
+        label: Affected files
+        description: |
+          List files or modules touched, in dependency order if relevant.
+      validations:
+        required: false
+
+    - type: textarea
+      id: safety
+      attributes:
+        label: Safety impact
+        description: Implications for safety and resource management.
+      validations:
+        required: false
