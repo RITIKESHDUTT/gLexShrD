@@ -1,4 +1,4 @@
-<h1 align="center">GlexShrD</h1>
+<h1 align="center">gLexShrD</h1>
 
 <p align="center">
 <strong>A math-first, type-safe graphics engine built on Vulkan<br>(Work In Progress)</strong><br>
