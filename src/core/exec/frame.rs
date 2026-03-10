@@ -113,7 +113,7 @@ impl<D, B: Backend> PassBuilder<'_, D, B> {
 	}
 	
 	pub fn submit(self) -> PassId {
-		
+		self.validate_resource_declarations();
 		let id = self.id;
 		self.graph.passes.push(PassDecl {
 			id,
@@ -125,6 +125,31 @@ impl<D, B: Backend> PassBuilder<'_, D, B> {
 			commands: self.commands,
 		});
 		id
+	}
+	
+	
+	fn validate_resource_declarations(&self) {
+		for cmd in &self.commands {
+			match cmd {
+				PassCommand::BindVertexBuffer(id) | PassCommand::BindIndexBuffer(id) => {
+					debug_assert!(
+						self.reads.iter().any(|(r, _)| r == id),
+						"Resource {id:?} bound in command but not declared in reads()"
+					);
+				}
+				PassCommand::CopyBuffer { src, dst, .. } => {
+					debug_assert!(
+						self.reads.iter().any(|(r, _)| r == src),
+						"Resource {src:?} used as copy source but not declared in reads()"
+					);
+					debug_assert!(
+						self.writes.iter().any(|(r, _)| r == dst),
+						"Resource {dst:?} used as copy destination but not declared in writes()"
+					);
+				}
+				_ => {}
+			}
+		}
 	}
 }
 // ─── Graphics impl ──────────────────────────────────────────
