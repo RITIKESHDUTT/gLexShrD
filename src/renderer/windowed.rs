@@ -1,4 +1,5 @@
-use crate::domain::UsageIntent;
+use ash::vk::Handle;
+use crate::domain::{DescriptorSetId, UsageIntent};
 use crate::domain::ResourceHandle;
 use crate::domain::ResourceKind;
 use crate::domain::PassId;
@@ -130,19 +131,16 @@ impl<'dev, > CsdResources<'dev> {
 }
 
 pub fn build_csd_commands(
-	graph: &mut FrameGraph<VulkanBackend>,
+	graph: &mut FrameGraph,
 	resources: &CsdResources,
 	pipelines: &CsdPipelines,
 	draw: &DecorationDraw,
 	screen_size: Vec2,
+	atlas_set: DescriptorSetId,
 ) -> PassId {
 	// register the vertex buffer and descriptor set with the graph
 	let quad = &resources.quad.unit_quad_vert_buf;
-	let quad_res = graph.add_buffer(quad.handle());
-	
-	let atlas_set = graph.register_descriptor_set(
-		resources.atlas.descriptor_set.handle(),
-	);
+	let quad_res = graph.add_buffer(VulkanBackend::buffer_handle(quad.handle()));
 	
 	let mut builder = graph
 		.add_graphics_pass(None)

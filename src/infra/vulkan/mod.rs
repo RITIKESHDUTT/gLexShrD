@@ -1,3 +1,4 @@
+use crate::domain::DescriptorSetId;
 use crate::core::FrameGraph;
 use crate::core::PresentSync;
 use crate::core::RenderTarget;
@@ -33,6 +34,7 @@ pub struct Glex<'dev> {
 	pipelines: PipelineManager<'dev, VulkanBackend>,
 	gpu: GpuContext<'dev, VulkanBackend>,
 	presentation: Presentation<'dev>,
+	atlas_set_id: DescriptorSetId,
 }
 
 
@@ -53,6 +55,8 @@ impl<'dev> Glex<'dev> {
 			DescriptorLayout::<VulkanBackend, TextSet>::new(ctx.device())?;
 		
 		let csd_resources = CsdResources::upload(ctx, &mut gpu, sampler_layout)?;
+		let atlas_set_id = gpu.executor_mut()
+							  .register_descriptor_set(csd_resources.atlas.descriptor_set.handle());
 		
 		
 		Ok(Self {
@@ -62,6 +66,7 @@ impl<'dev> Glex<'dev> {
 			csd_pipelines,
 			csd_resources,
 			theme: CsdTheme::default(),
+			atlas_set_id,
 		})
 	}
 	
@@ -105,11 +110,11 @@ impl<'dev> Glex<'dev> {
 		let state = window.decoration_state();
 		let draw = StandardDecorations.build_decorations(layout, state, &self.theme, title);
 		let screen_size = Vec2::new(extent.width() as f32, extent.height() as f32);
-		let mut graph = FrameGraph::<VulkanBackend>::new();
+		let mut graph = FrameGraph::new();
 		let resources = &self.csd_resources;
 		let csd = &self.csd_pipelines;
 		
-		build_csd_commands(&mut graph, resources, csd, &draw, screen_size);
+		build_csd_commands(&mut graph, resources, csd, &draw, screen_size, self.atlas_set_id);
 		
 		let signal_val = self.gpu.executor_mut()
 							 .execute(graph, swap_img, target, &self.pipelines)?;

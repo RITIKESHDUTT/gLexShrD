@@ -43,7 +43,7 @@ pub use resource::{
 	Sampler,
 };
 
-pub use exec::frame::FrameGraph;
+pub use exec::frame::{PassBuilder, FrameGraph};
 pub use exec::push_data;
 pub use exec::RenderTarget;
 pub use exec::{

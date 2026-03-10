@@ -2,7 +2,6 @@ use crate::core::exec::command::PassCommand;
 use crate::core::render::cache::PipelineId;
 use {
 	crate::core::{
-		backend::Backend,
 		type_state_queue::{Compute, Graphics, Transfer},
 		types::PushConstantRange,
 	},
@@ -75,8 +74,8 @@ pub struct PassDecl {
 /// PassBuilder<Graphics> is a compile error.
 // Removed:  'f lifetime
 // Added:    domain, descriptor_set, commands fields
-pub struct PassBuilder<'a, D, B: Backend> {
-	graph: &'a mut FrameGraph<B>,
+pub struct PassBuilder<'a, D> {
+	graph: &'a mut FrameGraph,
 	id: PassId,
 	domain: PassDomain,
 	pipeline: Option<PipelineId>,
@@ -89,7 +88,7 @@ pub struct PassBuilder<'a, D, B: Backend> {
 
 // ─── Generic impl (all domains) ─────────────────────────────
 
-impl<D, B: Backend> PassBuilder<'_, D, B> {
+impl<D> PassBuilder<'_, D> {
 	pub fn reads(mut self, resource: ResourceId, usage: UsageIntent) -> Self {
 		self.reads.push((resource, usage));
 		self
@@ -155,7 +154,7 @@ impl<D, B: Backend> PassBuilder<'_, D, B> {
 // ─── Graphics impl ──────────────────────────────────────────
 // Compile-time enforced: only PassBuilder<Graphics> can call these.
 
-impl<B: Backend> PassBuilder<'_, Graphics, B> {
+impl PassBuilder<'_, Graphics> {
 	pub fn bind_pipeline(mut self, id: PipelineId) -> Self {
 		self.commands.push(PassCommand::BindPipeline(id));
 		self
@@ -190,7 +189,7 @@ impl<B: Backend> PassBuilder<'_, Graphics, B> {
 // ─── Compute impl ───────────────────────────────────────────
 // Compile-time enforced: only PassBuilder<Compute> can call these.
 
-impl<B: Backend> PassBuilder<'_, Compute, B> {
+impl PassBuilder<'_, Compute> {
 	pub fn bind_pipeline(mut self, id: PipelineId) -> Self {
 		self.commands.push(PassCommand::BindPipeline(id));
 		self
@@ -210,7 +209,7 @@ impl<B: Backend> PassBuilder<'_, Compute, B> {
 // ─── Transfer impl ──────────────────────────────────────────
 // Compile-time enforced: only PassBuilder<Transfer> can call these.
 
-impl<B: Backend> PassBuilder<'_, Transfer, B> {
+impl PassBuilder<'_, Transfer> {
 	pub fn copy_buffer(mut self, src: ResourceId, dst: ResourceId, size: u64, dst_offset: u64) -> Self {
 		self.commands.push(PassCommand::CopyBuffer { src, dst, size, dst_offset });
 		self
@@ -221,20 +220,18 @@ impl<B: Backend> PassBuilder<'_, Transfer, B> {
 /// then compiled into an execution order with automatic barrier placement.
 // Removed: 'f lifetime
 // Added:   descriptor_sets registry
-pub struct FrameGraph<B: Backend> {
+pub struct FrameGraph {
 	resources: Vec<ResourceDecl>,
 	passes: Vec<PassDecl>,
-	descriptor_sets: Vec<B::DescriptorSet>,
 	next_resource_id: ResourceId,
 	next_pass_id: PassId,
 }
 
-impl<B: Backend> FrameGraph<B> {
+impl FrameGraph {
 	pub fn new() -> Self {
 		Self {
 			resources: Vec::new(),
 			passes: Vec::new(),
-			descriptor_sets: Vec::new(),
 			next_resource_id: 0,
 			next_pass_id: 0,
 		}
@@ -246,26 +243,16 @@ impl<B: Backend> FrameGraph<B> {
 		self.resources.push(ResourceDecl { id, kind, handle });
 		id
 	}
-	pub fn add_buffer(&mut self, handle: B::Buffer) -> ResourceId {
-		self.add_resource(ResourceKind::Buffer,
-						  ResourceHandle::Buffer(B::buffer_handle(handle)))
+	pub fn add_buffer(&mut self, handle:u64) -> ResourceId {
+		self.add_resource(ResourceKind::Buffer, ResourceHandle::Buffer(handle))
 	}
 	pub fn resource(&self, id: ResourceId) -> &ResourceDecl {
 		self.resources.iter().find(|r| r.id == id).expect("resource not found")
 	}
 	
-	/// Register a raw descriptor set handle with the graph.
-	/// Returns an opaque DescriptorSetId for use in PassCommands.
-	/// The graph resolves the id → raw handle during compile/execute.
-	pub fn register_descriptor_set(&mut self, raw: B::DescriptorSet) -> DescriptorSetId {
-		let id = DescriptorSetId(self.descriptor_sets.len() as u32);
-		self.descriptor_sets.push(raw);
-		id
-	}
-	
 	// Changed: returns PassBuilder<'_, Graphics, B> (no 'f)
 	// Added:   domain, descriptor_set, commands fields in builder
-	pub fn add_graphics_pass(&mut self, pipeline: Option<PipelineId>) -> PassBuilder<'_, Graphics, B> {
+	pub fn add_graphics_pass(&mut self, pipeline: Option<PipelineId>) -> PassBuilder<'_, Graphics> {
 		let id = self.next_pass_id;
 		self.next_pass_id += 1;
 		PassBuilder {
@@ -281,7 +268,7 @@ impl<B: Backend> FrameGraph<B> {
 		}
 	}
 	
-	pub fn add_compute_pass(&mut self, pipeline: Option<PipelineId>) -> PassBuilder<'_, Compute, B> {
+	pub fn add_compute_pass(&mut self, pipeline: Option<PipelineId>) -> PassBuilder<'_, Compute> {
 		let id = self.next_pass_id;
 		self.next_pass_id += 1;
 		PassBuilder {
@@ -297,7 +284,7 @@ impl<B: Backend> FrameGraph<B> {
 		}
 	}
 	
-	pub fn add_transfer_pass(&mut self) -> PassBuilder<'_, Transfer, B> {
+	pub fn add_transfer_pass(&mut self) -> PassBuilder<'_, Transfer> {
 		let id = self.next_pass_id;
 		self.next_pass_id += 1;
 		PassBuilder {
@@ -462,7 +449,7 @@ impl<B: Backend> FrameGraph<B> {
 	}
 }
 
-impl<B: Backend> Default for FrameGraph<B> {
+impl Default for FrameGraph{
 	fn default() -> Self {
 		Self::new()
 	}
@@ -490,14 +477,13 @@ pub struct CompiledPass {
 
 // Removed: 'f lifetime
 // Added:   descriptor_sets: Vec<B::DescriptorSet> (registry carried from FrameGraph)
-pub struct CompiledGraph<B: Backend> {
+pub struct CompiledGraph {
 	pub order: ExecutionOrder,
 	pub passes: Vec<CompiledPass>,
 	pub resources: Vec<ResourceDecl>,
-	pub descriptor_sets: Vec<B::DescriptorSet>,
 }
 
-impl<B: Backend> FrameGraph<B> {
+impl  FrameGraph {
 	
 	/// Full compilation step.
 	///
@@ -505,7 +491,7 @@ impl<B: Backend> FrameGraph<B> {
 	///
 	/// Phase 1: dependency + barrier analysis
 	/// Phase 2: lowering PassDecl → CompiledPass
-	pub fn compile(self) -> Result<CompiledGraph<B>, GraphError> {
+	pub fn compile(self) -> Result<CompiledGraph, GraphError> {
 		// ─────────────────────────────────────────────
 		// Phase 1: dependency compilation
 		// ─────────────────────────────────────────────
@@ -528,7 +514,6 @@ impl<B: Backend> FrameGraph<B> {
 			order,
 			passes: compiled_passes,
 			resources: self.resources,
-			descriptor_sets: self.descriptor_sets,
 		})
 	}
 }
