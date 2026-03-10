@@ -3,44 +3,38 @@
 //! Owns all OS-level types. Translates Wayland events into core vocabulary.
 //! Core never sees anything in this file.
 use crate::core::Backend;
+use crate::infra::platform::Surface;
 use crate::infra::vulkan::VulkanEntry;
 use crate::infra::vulkan::VulkanInstance;
-use crate::infra::platform::Surface;
 use ash::vk;
 
 use crate::infra::platform::surface::WaylandHandles;
 use glex_platform::csd::hit_test::hit_test;
 use {
-	std::{
-		sync::Arc,
-	},
-	crate::{
-		infra::{
-			VulkanBackend,
-		},
-	},
+	crate::infra::VulkanBackend,
 	glex_platform::platform::{
 		ControlFlow,
 		ElementState,
 		Event,
+		Extent2D,
 		KeyCode,
 		KeyEvent,
+		Modifiers,
 		MouseButton,
 		Platform,
 		Window,
 		WindowConfig,
 		WindowEvent,
 		WindowId,
-		Modifiers,
-		Extent2D,
 	},
 	glex_platform::{
 		csd::{
-			hit_test::{HitZone},
+			hit_test::HitZone,
 			layout::DecorationLayout,
 			state::{ButtonAction, DecorationState},
 		},
-		WlEvent, WaylandWindow, wayland_available}
+		wayland_available, WaylandWindow, WlEvent},
+	std::sync::Arc
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

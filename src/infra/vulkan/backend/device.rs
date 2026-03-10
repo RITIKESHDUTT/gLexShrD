@@ -1,8 +1,8 @@
-use crate::core::Backend;
 use super::QueueLane;
-use crate::infra::vulkan::QueueDiscovery;
-use crate::infra::vulkan::backend::{VulkanDevice, VulkanBackend as vb};
 use super::{PhysicalDevice, VulkanInstance};
+use crate::core::Backend;
+use crate::infra::vulkan::backend::{VulkanBackend as vb, VulkanDevice};
+use crate::infra::vulkan::QueueDiscovery;
 use ash::vk;
 
 pub struct LogicalDevice;

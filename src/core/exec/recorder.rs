@@ -1,16 +1,10 @@
-use crate::core::render::cache::{PipelineManager, PipelineId};
-use crate::core::resource::{Image, img_state, buf_state, Buffer};
-use crate::core::resource::{desc_state::{Bound, Updated}, DescriptorSet};
-use crate::core::cmd::{Outside, Inside, Recording};
-use crate::core::cmd::CommandBuffer;
+use crate::core::backend::types::{Extent2D, Offset2D, PipelineBindPoint, Rect2D, ShaderStages, Viewport};
 use crate::core::backend::{Backend, CommandOps};
-use crate::core::backend::types::{Extent2D, Viewport, Rect2D, Offset2D, ShaderStages, PipelineBindPoint};
-
-pub enum PassRecord<'f, B: Backend> {
-	Graphics(Box<dyn for<'a, 'dev> FnOnce(&'a mut RenderRecorder2D<'a, 'dev, B>) + 'f>),
-	Compute(Box<dyn for<'a, 'dev> FnOnce(&'a mut ComputeRecorder<'a, 'dev, B>) + 'f>),
-	Transfer(Box<dyn for<'a, 'dev> FnOnce(&'a mut TransferRecorder<'a, 'dev, B>) + 'f>),
-}
+use crate::core::cmd::CommandBuffer;
+use crate::core::cmd::{Inside, Outside, Recording};
+use crate::core::render::cache::{PipelineId, PipelineManager};
+use crate::core::resource::{buf_state, img_state, Buffer, Image};
+use crate::core::resource::{desc_state::{Bound, Updated}, DescriptorSet};
 
 pub struct RenderRecorder2D<'a, 'dev, B: Backend> {
 	pub(crate) cmd: &'a CommandBuffer<'dev, Recording, B, Inside>,

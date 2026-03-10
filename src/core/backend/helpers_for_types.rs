@@ -1,5 +1,5 @@
-use crate::core::VertexConfig;
 use super::types::*;
+use crate::core::VertexConfig;
 
 #[macro_export]
 macro_rules! vertex_offset {

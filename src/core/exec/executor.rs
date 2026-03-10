@@ -1,35 +1,31 @@
+use crate::core::types::IndexType;
 use {
 	crate::{
 		core::{
-			DeviceOps,
+			backend::{
+				types::{Extent2D, ImageAspect, PipelineBindPoint},
+				Backend, BufferBarrierInfo2, CommandOps,
+				ImageBarrierInfo, SemaphoreSubmit,
+			},
+			barrier::{resolve_barrier, BarrierDesc},
 			exec::{
+				command::PassCommand,
+				frame::{BarrierEdge, CompiledPass},
+				lane::WorkLane,
+				ExecutionOrder,
 				FrameGraph,
 				PipelineManager,
-				RenderRecorder2D,
-				TransferRecorder,
-				ComputeRecorder,
-				ExecutionOrder,
-				recorder::PassRecord,
-				lane::WorkLane,
-				frame::{CompiledPass, BarrierEdge},
-			},
-			resource::{
-				img_state,
-				SwapchainImage,
-				ImageView,
-			},
-			backend::{
-				Backend, SemaphoreSubmit,
-				ImageBarrierInfo, BufferBarrierInfo2,
-				types::{Extent2D, ImageAspect},
 			},
 			render::RenderingInfoBuilder,
-			type_state_queue::{Graphics, Compute, Transfer},
-			barrier::{resolve_barrier, BarrierDesc},
+			resource::{img_state, ImageView, SwapchainImage},
 			type_state_queue::Queue,
+			type_state_queue::{Compute, Graphics, Transfer},
+			DeviceOps,
 		},
-		
-		domain::{PassId, PassDomain, ResourceHandle, Stage, Access, GraphError, ResourceDecl},
+		domain::{
+			Access, GraphError, PassDomain, PassId,
+			ResourceDecl, ResourceHandle, Stage,
+		},
 	},
 	std::collections::HashMap,
 };
@@ -52,7 +48,8 @@ pub struct PresentSync<B: Backend> {
 	pub wait_acquire: B::Semaphore,
 	pub signal_render_finished: B::Semaphore,
 }
-// ── Barrier helpers ──────────────────────────────────────────
+
+// ── Barrier helpers (unchanged) ──────────────────────────────
 
 fn build_image_barrier<B: Backend>(desc: &BarrierDesc, image: B::Image) -> ImageBarrierInfo<B> {
 	ImageBarrierInfo {
@@ -68,6 +65,7 @@ fn build_image_barrier<B: Backend>(desc: &BarrierDesc, image: B::Image) -> Image
 		dst_queue_family: desc.dst_queue_family,
 	}
 }
+
 fn build_buffer_barrier<B: Backend>(desc: &BarrierDesc, buffer: B::Buffer) -> BufferBarrierInfo2<B> {
 	BufferBarrierInfo2 {
 		buffer,
@@ -81,6 +79,7 @@ fn build_buffer_barrier<B: Backend>(desc: &BarrierDesc, buffer: B::Buffer) -> Bu
 }
 
 enum BarrierSide { Acquire, Release }
+
 fn collect_barriers<B: Backend>(
 	side: BarrierSide,
 	barriers: &[BarrierEdge],
@@ -104,7 +103,6 @@ fn collect_barriers<B: Backend>(
 		match res.handle {
 			ResourceHandle::Image(raw) => {
 				let mut bar = build_image_barrier::<B>(&resolved, B::image_from_raw(raw));
-				
 				match side {
 					BarrierSide::Acquire if is_cross => {
 						bar.src_stage = Stage::None;
@@ -138,6 +136,7 @@ fn collect_barriers<B: Backend>(
 	
 	(imgs, bufs)
 }
+
 fn present_sync_submits<B: Backend>(
 	sync: &Option<PresentSync<B>>,
 	is_first: bool,
@@ -166,6 +165,16 @@ fn present_sync_submits<B: Backend>(
 	(waits, signals)
 }
 
+// ── NEW: resolve ResourceId → raw buffer handle ─────────────
+
+fn resolve_buffer<B: Backend>(resources: &[ResourceDecl], id: u32) -> B::Buffer {
+	let res = resources.iter().find(|r| r.id == id).expect("resource not found");
+	match res.handle {
+		ResourceHandle::Buffer(raw) => B::buffer_from_raw(raw),
+		_ => panic!("expected buffer resource for ResourceId {}", id),
+	}
+}
+
 
 impl<'dev, B: Backend> Executor<'dev, B> {
 	pub fn new(device: &'dev B::Device) -> Self {
@@ -177,7 +186,6 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 			present_sync: None,
 		}
 	}
-	
 	
 	pub fn attach_graphics(&mut self, queue: Queue<Graphics, B>) -> Result<(), B::Error> {
 		self.graphics = Some(WorkLane::new(self.device, queue)?);
@@ -230,7 +238,6 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 		self.compute.is_some()
 	}
 	
-	
 	fn timeline_handle_for(&self, domain: PassDomain) -> B::Semaphore {
 		match domain {
 			PassDomain::Graphics => self.graphics_lane().timeline_handle(),
@@ -255,9 +262,10 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 		self.graphics_lane().timeline_handle()
 	}
 	
-	pub fn execute<'f>(
+	// ── CHANGED: FrameGraph<B> (no 'f), match on domain, replay commands ──
+	pub fn execute(
 		&mut self,
-		graph: FrameGraph<'f, B>,
+		graph: FrameGraph<B>,
 		swap_img: SwapchainImage<'dev, img_state::Undefined, B>,
 		target: RenderTarget<'_, B>,
 		pipelines: &PipelineManager<'dev, B>,
@@ -265,8 +273,9 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 		let compiled = graph.compile()?;
 		
 		let ExecutionOrder { ordered_passes, barriers } = compiled.order;
-		let mut passes: HashMap<PassId, CompiledPass<'f, B>> = compiled.passes.into_iter().map(|p| (p.id, p)).collect();
+		let mut passes: HashMap<PassId, CompiledPass> = compiled.passes.into_iter().map(|p| (p.id, p)).collect();
 		let resources = compiled.resources;
+		let descriptor_sets = compiled.descriptor_sets; // NEW: carried from FrameGraph
 		
 		let mut final_graphics_val: u64 = 0;
 		
@@ -285,7 +294,8 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 			.iter()
 			.rev()
 			.find(|&&pid| passes
-				.get(&pid).map(|p| p.domain == PassDomain::Graphics)
+				.get(&pid)
+				.map(|p| p.domain == PassDomain::Graphics)
 				.unwrap_or(false)).copied();
 		
 		for &pass_id in &ordered_passes {
@@ -293,10 +303,9 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 			
 			let domain = pass.domain;
 			let pass_pipeline = pass.pipeline;
-			let descriptor_set = pass.descriptor_set;
-			let record = pass.record;
+			let commands = pass.commands;
 			
-			// ── Gather waits ──────────────────────────────────
+			// ── Gather waits (unchanged) ─────────────────────
 			let mut waits: Vec<(B::Semaphore, u64)> = Vec::new();
 			
 			let (lane_sem, lane_prev) = match domain {
@@ -333,17 +342,15 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 				}
 			}
 			
-			// ── Barriers ─────────────────────────────────────
+			// ── Barriers (unchanged) ─────────────────────────
 			let (img_bars, buf_bars) = collect_barriers::<B>(
-				BarrierSide::Acquire, &barriers, pass_id, &resources, |d|
-					self.family_for(d),
+				BarrierSide::Acquire, &barriers, pass_id, &resources, |d| self.family_for(d),
 			);
 			let (rel_img, rel_buf) = collect_barriers::<B>(
-				BarrierSide::Release, &barriers, pass_id, &resources, |d|
-					self.family_for(d),
+				BarrierSide::Release, &barriers, pass_id, &resources, |d| self.family_for(d),
 			);
 			
-			// ── Present sync ─────────────────────────────────
+			// ── Present sync (unchanged) ─────────────────────
 			let is_first = first_gfx == Some(pass_id);
 			let is_last = last_gfx == Some(pass_id);
 			
@@ -352,64 +359,14 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 			} else {
 				(Vec::new(), Vec::new())
 			};
-			// ── Record + submit ───────────────────────────────
-			let signal_val = match record {
-				PassRecord::Compute(closure) => {
-					let lane = self.compute.as_mut().expect("no compute lane");
-					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e| GraphError::backend(e))?;
-					
-					if !img_bars.is_empty() || !buf_bars.is_empty() {
-						cmd.image_barrier(&img_bars);
-						cmd.buffer_barrier(&buf_bars);
-					}
-					
-					let mut active_layout = None;
-					if let Some(id) = pass_pipeline {
-						cmd.bind_compute_pipeline(pipelines.handle(id));
-						active_layout = Some(pipelines.layout(id));
-					}
-					
-					let mut recorder = ComputeRecorder {
-						cmd: &cmd,
-						pipelines,
-						layout: active_layout,
-					};
-					if let Some(set) = descriptor_set {
-						recorder.bind_compute_descriptor_set_raw(set);
-					}
-					closure(&mut recorder);
-					
-					if !rel_img.is_empty() || !rel_buf.is_empty() {
-						cmd.image_barrier(&rel_img);
-						cmd.buffer_barrier(&rel_buf);
-					}
-					let executable = cmd.end().map_err(|e| GraphError::backend(e))?;
-					lane.submit(self.device, executable, &waits).map_err(|e| GraphError::backend(e))?
-				}
+			
+			// ── CHANGED: match on domain, replay commands ────
+			let signal_val = match domain {
 				
-				PassRecord::Transfer(closure) => {
-					let lane = self.transfer.as_mut().expect("no transfer lane");
-					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e| GraphError::backend(e))?;
-					
-					if !img_bars.is_empty() || !buf_bars.is_empty() {
-						cmd.image_barrier(&img_bars);
-						cmd.buffer_barrier(&buf_bars);
-					}
-					
-					let mut recorder = TransferRecorder { cmd: &cmd };
-					closure(&mut recorder);
-					
-					if !rel_img.is_empty() || !rel_buf.is_empty() {
-						cmd.image_barrier(&rel_img);
-						cmd.buffer_barrier(&rel_buf);
-					}
-					let executable = cmd.end().map_err(|e| GraphError::backend(e))?;
-					lane.submit(self.device, executable, &waits).map_err(|e| GraphError::backend(e))?
-				}
-				
-				PassRecord::Graphics(closure) => {
+				PassDomain::Graphics => {
 					let lane = self.graphics.as_mut().expect("no graphics lane");
-					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e| GraphError::backend(e))?;
+					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e|
+						GraphError::backend(e))?;
 					
 					if !img_bars.is_empty() || !buf_bars.is_empty() {
 						cmd.image_barrier(&img_bars);
@@ -423,8 +380,7 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 					
 					let mut builder = RenderingInfoBuilder::new(target.extent);
 					if is_first {
-						builder = builder.color_clear(target.color_view,
-							target.clear_color);
+						builder = builder.color_clear(target.color_view, target.clear_color);
 					} else {
 						builder = builder.color_load(target.color_view);
 					}
@@ -434,18 +390,56 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 					inside.set_viewport(target.extent);
 					inside.set_scissor(target.extent);
 					
-					let mut active_layout = None;
+					// initial pipeline from PassDecl.pipeline
+					let mut active_layout: Option<B::PipelineLayout> = None;
 					if let Some(id) = pass_pipeline {
 						inside.bind_graphics_pipeline(pipelines.handle(id));
 						active_layout = Some(pipelines.layout(id));
 					}
 					
-					let mut recorder = RenderRecorder2D::new(&inside, pipelines,
-						active_layout);
-					if let Some(set) = descriptor_set {
-						recorder.bind_descriptor_set_raw(set);
+					// ── replay commands ──
+					for command in &commands {
+						match command {
+							PassCommand::BindPipeline(id) => {
+								inside.bind_graphics_pipeline(pipelines.handle(*id));
+								active_layout = Some(pipelines.layout(*id));
+							}
+							PassCommand::Draw { vertex_count } => {
+								inside.draw(*vertex_count);
+							}
+							PassCommand::DrawIndexed { index_count, instance_count, first_index } => {
+								inside.draw_indexed(*index_count, *instance_count, *first_index);
+							}
+							PassCommand::BindVertexBuffer(res_id) => {
+								let raw = resolve_buffer::<B>(&resources, *res_id);
+								inside.device().cmd_bind_vertex_buffers(inside.handle(), 0, &[raw], &[0]);
+							}
+							PassCommand::BindIndexBuffer(res_id) => {
+								let raw = resolve_buffer::<B>(&resources, *res_id);
+								// direct raw call — buffer state already proven by Buffer FSM before graph registration
+								inside.device().cmd_bind_index_buffer(inside.handle(), raw, 0, IndexType::U32);
+							}
+							PassCommand::BindDescriptorSet(set_id) => {
+								let raw = descriptor_sets[set_id.0 as usize];
+								let layout = active_layout.expect("no pipeline bound before descriptor set");
+								inside.device().cmd_bind_descriptor_sets(
+									inside.handle(), PipelineBindPoint::GRAPHICS,
+									layout, 0, &[raw], &[],
+								);
+							}
+							PassCommand::PushConstants { range, data } => {
+								let layout = active_layout.expect("no pipeline bound before push constants");
+								inside.device().cmd_push_constants(
+									inside.handle(), layout,
+									range.stages, range.offset,
+									&data[..range.size as usize],
+								);
+							}
+							PassCommand::Dispatch { .. } | PassCommand::CopyBuffer { .. } => {
+								unreachable!("non-graphics command in graphics pass")
+							}
+						}
 					}
-					closure(&mut recorder);
 					
 					let outside = inside.end_rendering();
 					
@@ -468,6 +462,92 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 							&bin_waits, &bin_signals,
 						).map_err(|e| GraphError::backend(e))?
 					}
+				}
+				
+				PassDomain::Compute => {
+					let lane = self.compute.as_mut().expect("no compute lane");
+					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e|
+						GraphError::backend(e))?;
+					
+					if !img_bars.is_empty() || !buf_bars.is_empty() {
+						cmd.image_barrier(&img_bars);
+						cmd.buffer_barrier(&buf_bars);
+					}
+					
+					let mut active_layout: Option<B::PipelineLayout> = None;
+					if let Some(id) = pass_pipeline {
+						cmd.bind_compute_pipeline(pipelines.handle(id));
+						active_layout = Some(pipelines.layout(id));
+					}
+					
+					// ── replay commands ──
+					for command in &commands {
+						match command {
+							PassCommand::BindPipeline(id) => {
+								cmd.bind_compute_pipeline(pipelines.handle(*id));
+								active_layout = Some(pipelines.layout(*id));
+							}
+							PassCommand::Dispatch { x, y, z } => {
+								cmd.dispatch(*x, *y, *z);
+							}
+							PassCommand::BindDescriptorSet(set_id) => {
+								let raw = descriptor_sets[set_id.0 as usize];
+								let layout = active_layout.expect("no pipeline bound before descriptor set");
+								cmd.device().cmd_bind_descriptor_sets(
+									cmd.handle(), PipelineBindPoint::COMPUTE,
+									layout, 0, &[raw], &[],
+								);
+							}
+							PassCommand::PushConstants { range, data } => {
+								let layout = active_layout.expect("no pipeline bound before push constants");
+								cmd.device().cmd_push_constants(
+									cmd.handle(), layout,
+									range.stages, range.offset,
+									&data[..range.size as usize],
+								);
+							}
+							_ => unreachable!("non-compute command in compute pass"),
+						}
+					}
+					
+					if !rel_img.is_empty() || !rel_buf.is_empty() {
+						cmd.image_barrier(&rel_img);
+						cmd.buffer_barrier(&rel_buf);
+					}
+					let executable = cmd.end().map_err(|e| GraphError::backend(e))?;
+					lane.submit(self.device, executable, &waits).map_err(|e| GraphError::backend(e))?
+				}
+				
+				PassDomain::Transfer => {
+					let lane = self.transfer.as_mut().expect("no transfer lane");
+					let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e|
+						GraphError::backend(e))?;
+					
+					if !img_bars.is_empty() || !buf_bars.is_empty() {
+						cmd.image_barrier(&img_bars);
+						cmd.buffer_barrier(&buf_bars);
+					}
+					
+					// ── replay commands ──
+					for command in &commands {
+						match command {
+							PassCommand::CopyBuffer { src, dst, size, dst_offset } => {
+								let src_raw = resolve_buffer::<B>(&resources, *src);
+								let dst_raw = resolve_buffer::<B>(&resources, *dst);
+								cmd.device().cmd_copy_buffer(
+									cmd.handle(), src_raw, dst_raw, 0, *dst_offset, *size,
+								);
+							}
+							_ => unreachable!("non-transfer command in transfer pass"),
+						}
+					}
+					
+					if !rel_img.is_empty() || !rel_buf.is_empty() {
+						cmd.image_barrier(&rel_img);
+						cmd.buffer_barrier(&rel_buf);
+					}
+					let executable = cmd.end().map_err(|e| GraphError::backend(e))?;
+					lane.submit(self.device, executable, &waits).map_err(|e| GraphError::backend(e))?
 				}
 			};
 			

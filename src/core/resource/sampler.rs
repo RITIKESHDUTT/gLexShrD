@@ -1,5 +1,5 @@
-use crate::core::types::{Filter, SamplerAddressMode};
 use crate::core::backend::{Backend, DeviceOps};
+use crate::core::types::{Filter, SamplerAddressMode};
 /// RAII wrapper for a Vulkan sampler.
 pub struct Sampler<'dev, B: Backend> {
 	device: &'dev B::Device,

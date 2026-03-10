@@ -1,5 +1,5 @@
-use crate::core::backend::{Backend, DeviceOps};
 use crate::core::backend::types::DescriptorPoolSize;
+use crate::core::backend::{Backend, DeviceOps};
 
 pub struct DescriptorPool<'dev, B: Backend> {
 	device: &'dev B::Device,

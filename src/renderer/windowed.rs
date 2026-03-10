@@ -1,8 +1,12 @@
-use super::*;
+use crate::domain::UsageIntent;
+use crate::domain::ResourceHandle;
+use crate::domain::ResourceKind;
+use crate::domain::PassId;
 use super::pipelines::{RECT_PUSH_RANGE, TEXT_PUSH_RANGE};
 use super::prelude::*;
-use glex_platform::csd::{GLYPH_W, GLYPH_H,DecorationDraw, FontAtlas};
-
+use super::*;
+use glex_platform::csd::{DecorationDraw, FontAtlas, GLYPH_H, GLYPH_W};
+use crate::core::type_state_queue::sealed::QueueHandle;
 pub struct TextAtlas<'dev> {
 	pub image: Image<'dev, img_state::ShaderReadOnly, VulkanBackend>,
 	pub view: ImageView<'dev, VulkanBackend>,
@@ -125,18 +129,29 @@ impl<'dev, > CsdResources<'dev> {
 	}
 }
 
-pub fn record_csd(
-	recorder: &mut RenderRecorder2D<VulkanBackend>,
+pub fn build_csd_commands(
+	graph: &mut FrameGraph<VulkanBackend>,
 	resources: &CsdResources,
 	pipelines: &CsdPipelines,
 	draw: &DecorationDraw,
 	screen_size: Vec2,
-) {
+) -> PassId {
+	// register the vertex buffer and descriptor set with the graph
 	let quad = &resources.quad.unit_quad_vert_buf;
+	let quad_res = graph.add_buffer(quad.handle());
+	
+	let atlas_set = graph.register_descriptor_set(
+		resources.atlas.descriptor_set.handle(),
+	);
+	
+	let mut builder = graph
+		.add_graphics_pass(None)
+		.reads(quad_res, UsageIntent::vertex_buffer_read());
 	
 	// ── RECT ─────────────────────────────────────────────
-	recorder.bind_pipeline(pipelines.rect());
-	recorder.bind_vertex_buffer(quad);
+	builder = builder
+		.bind_pipeline(pipelines.rect())
+		.bind_vertex_buffer(quad_res);
 	
 	for rect in draw.rects() {
 		let b = rect.bounds();
@@ -150,32 +165,33 @@ pub fn record_csd(
 			color:     [c.r() as f32, c.g() as f32, c.b() as f32, c.a() as f32].into(),
 		};
 		
-		
-		recorder.push_constants(RECT_PUSH_RANGE.stages(), RECT_PUSH_RANGE.offset(), &push);
-		
-		recorder.draw(6);
+		builder = builder
+			.push_constants(RECT_PUSH_RANGE, push_data(&push))
+			.draw(6);
 	}
 	
 	// ── TEXT ─────────────────────────────────────────────
-	recorder.bind_pipeline(pipelines.text());
-	recorder.bind_vertex_buffer(quad);
-	recorder.bind_descriptor_set_ref(&resources.atlas.descriptor_set);
+	builder = builder
+		.bind_pipeline(pipelines.text())
+		.bind_vertex_buffer(quad_res)
+		.bind_descriptor_set(atlas_set);
 	
 	for glyph in draw.glyphs() {
-			let c = glyph.color();
-			let uv = glyph.uv();
-			
-			let push = TextPush {
-				screen_size,
-				glyph_pos:  [glyph.x() as f32, glyph.y() as f32].into(),
-				glyph_size: [GLYPH_W as f32, GLYPH_H as f32].into(),
-				uv_origin:  [uv[0], uv[1]].into(),
-				uv_size:    [uv[2] - uv[0], uv[3] - uv[1]].into(),
-				_pad:       [0.0, 0.0].into(),
-				color:      [c.r() as f32, c.g() as f32, c.b() as f32, c.a() as f32].into(),
-			};
+		let c = glyph.color();
+		let uv = glyph.uv();
 		
-		recorder.push_constants(TEXT_PUSH_RANGE.stages(), TEXT_PUSH_RANGE.offset(), &push);
-	recorder.draw(6);
+		let push = TextPush {
+			screen_size,
+			glyph_pos:  [glyph.x() as f32, glyph.y() as f32].into(),
+			glyph_size: [GLYPH_W as f32, GLYPH_H as f32].into(),
+			uv_origin:  [uv[0], uv[1]].into(),
+			uv_size:    [uv[2] - uv[0], uv[3] - uv[1]].into(),
+			_pad:       [0.0, 0.0].into(),
+			color:      [c.r() as f32, c.g() as f32, c.b() as f32, c.a() as f32].into(),
+		};
+		
+		builder = builder.push_constants(TEXT_PUSH_RANGE, push_data(&push)).draw(6);
 	}
+	
+	builder.submit()
 }

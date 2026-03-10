@@ -1,6 +1,6 @@
 use crate::renderer::pipelines::{create_rect_pipeline, create_text_pipeline};
 use crate::renderer::prelude::*;
-use crate::renderer::shaders::{*};
+use crate::renderer::shaders::*;
 
 pub struct CsdPipelines{
 	rect: PipelineId,

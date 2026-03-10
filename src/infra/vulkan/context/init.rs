@@ -1,20 +1,20 @@
+use crate::core::type_state_queue::sealed::QueueHandle;
 use crate::infra::platform::Surface;
 use crate::infra::platform::VulkanWindow;
-use crate::core::type_state_queue::sealed::QueueHandle;
 
-use crate::core::types::MemoryRequirements;
-use crate::core::types::MemoryPropertyFlags;
-use crate::core::DeviceOps;
-use crate::core::{Buffer};
-use crate::infra::vulkan::backend::{
-	VulkanDevice, PhysicalDevice, VulkanInstance, VulkanEntry,
-	LogicalDevice, QueueLane, QueueDiscovery, Swapchain, VulkanBackend
-};
-use crate::core::buf_state::{Undefined};
-use std::sync::Arc;
-use crate::core::Backend;
+use crate::core::buf_state::Undefined;
 use crate::core::types::BufferUsage;
+use crate::core::types::MemoryPropertyFlags;
+use crate::core::types::MemoryRequirements;
+use crate::core::Backend;
+use crate::core::DeviceOps;
+use crate::core::Buffer;
+use crate::infra::vulkan::backend::{
+	LogicalDevice, PhysicalDevice, QueueDiscovery, QueueLane,
+	Swapchain, VulkanBackend, VulkanDevice, VulkanEntry, VulkanInstance
+};
 use crate::infra::vulkan::context::presentation::MemoryIndices;
+use std::sync::Arc;
 
 pub struct VulkanContext {
 	pub device:   VulkanDevice,

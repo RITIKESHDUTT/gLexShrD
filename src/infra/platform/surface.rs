@@ -1,8 +1,8 @@
-use crate::infra::vulkan::VulkanInstance;
 use crate::infra::vulkan::VulkanEntry;
+use crate::infra::vulkan::VulkanInstance;
+use ash::vk;
 use glex_platform::WaylandWindow;
 use std::sync::Arc;
-use ash::vk;
 
 pub trait WaylandHandles {
 	fn wl_display(&self) -> *mut std::ffi::c_void;

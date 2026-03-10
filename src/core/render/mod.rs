@@ -8,8 +8,8 @@ use crate::core::{cmd::{
 	Outside,
 	Recording
 }, Backend, CommandOps, RenderingDesc};
-use std::marker::PhantomData;
 pub use renderbuilder::RenderingInfoBuilder;
+use std::marker::PhantomData;
 
 
 impl<'dev, B: Backend> CommandBuffer<'dev, Recording, B, Outside> {

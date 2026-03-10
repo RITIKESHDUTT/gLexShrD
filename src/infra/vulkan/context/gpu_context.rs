@@ -1,8 +1,8 @@
+use crate::core::type_state_queue::{Graphics, Queue, Transfer};
 use crate::core::Backend;
-use crate::core::{Executor, PresentSync};
 use crate::core::FrameSync;
-use crate::core::type_state_queue::{Queue, Graphics, Transfer};
 use crate::core::WorkLane;
+use crate::core::{Executor, PresentSync};
 use crate::infra::vulkan::backend::{VulkanBackend, VulkanDevice};
 use crate::infra::vulkan::context::init::VulkanContext;
 

@@ -1,9 +1,9 @@
 use crate::{
 	core::{
-		Backend, DeviceOps, SemaphoreSubmit,
-		cmd::{CommandBuffer, CommandPool, Executable, Initial},
-		type_state_queue::sealed::QueueHandle,
-		sync::TimelineSemaphore,
+		cmd::{CommandBuffer, CommandPool, Executable, Initial}, sync::TimelineSemaphore, type_state_queue::sealed::QueueHandle,
+		Backend,
+		DeviceOps,
+		SemaphoreSubmit,
 	},
 	domain::Stage,
 };

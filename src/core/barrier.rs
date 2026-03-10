@@ -1,7 +1,7 @@
-use crate::domain::PassDomain;
 use crate::core::exec::BarrierEdge;
-use crate::domain::UsageIntent;
+use crate::domain::PassDomain;
 use crate::domain::ResourceId;
+use crate::domain::UsageIntent;
 
 /// Barrier with queue ownership resolved.
 /// No Vulkan types — just domain intents + queue family indices.

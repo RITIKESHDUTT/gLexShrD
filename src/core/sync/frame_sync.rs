@@ -1,5 +1,5 @@
-use crate::core::backend::{Backend, DeviceOps};
 use super::BinarySemaphore;
+use crate::core::backend::{Backend, DeviceOps};
 
 
 pub struct FrameSync<'dev, const N: usize, B: Backend> {

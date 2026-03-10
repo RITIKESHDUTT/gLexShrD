@@ -1,4 +1,4 @@
-use ash::{Entry};
+use ash::Entry;
 /// Safe wrapper - owns Entry, guarantees it stays loaded
 pub struct VulkanEntry {
 	entry: Entry,

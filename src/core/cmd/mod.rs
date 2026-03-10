@@ -14,4 +14,4 @@ pub mod state {
 
 pub use self::buffer::CommandBuffer;
 pub use self::pool::CommandPool;
-pub use state::{Executable, Initial, Recording, Outside, Inside};
+pub use state::{Executable, Initial, Inside, Outside, Recording};

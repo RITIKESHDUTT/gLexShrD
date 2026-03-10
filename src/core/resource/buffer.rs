@@ -1,14 +1,14 @@
-use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
-use crate::core::backend::{Backend, DeviceOps, CommandOps, BufferBarrierInfo2};
-use crate::core::backend::types::{BufferUsage, PipelineStageFlags2, AccessFlags2,
-								  IndexType, PipelineBindPoint, ShaderStages, QUEUE_FAMILY_IGNORED};
 use super::buf_state;
 use super::img_state::TransferDst;
 use super::Image;
-use crate::core::cmd::{CommandBuffer, Recording, Inside, Outside};
+use crate::core::backend::types::{AccessFlags2, BufferUsage, IndexType,
+								  PipelineBindPoint, PipelineStageFlags2, ShaderStages, QUEUE_FAMILY_IGNORED};
+use crate::core::backend::{Backend, BufferBarrierInfo2, CommandOps, DeviceOps};
+use crate::core::cmd::{CommandBuffer, Inside, Outside, Recording};
+use crate::core::resource::desc_state::{Bound, Updated};
 use crate::core::resource::DescriptorSet;
-use crate::core::resource::desc_state::{Updated, Bound};
+use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 
 
 /// # Buffer Typestate System

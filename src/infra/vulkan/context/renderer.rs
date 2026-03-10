@@ -1,8 +1,8 @@
+use super::GpuContext;
 use crate::{
 	core::{Backend, DescriptorLayout, DescriptorSetInterface, PipelineManager},
 	infra::{Presentation, VulkanBackend},
 };
-use super::GpuContext;
 
 pub struct Rendering<'dev, I>
 where

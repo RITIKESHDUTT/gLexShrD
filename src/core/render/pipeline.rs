@@ -1,8 +1,8 @@
-use crate::core::backend::{Backend, CommandOps};
-use crate::core::backend::types::{PipelineBindPoint, Extent2D, Viewport, Rect2D, Offset2D};
-use crate::core::cmd::Recording;
-use crate::core::cmd::CommandBuffer;
 use super::{Inside, Outside};
+use crate::core::backend::types::{Extent2D, Offset2D, PipelineBindPoint, Rect2D, Viewport};
+use crate::core::backend::{Backend, CommandOps};
+use crate::core::cmd::CommandBuffer;
+use crate::core::cmd::Recording;
 
 impl<B: Backend> CommandBuffer<'_, Recording, B, Inside> {
 	pub fn bind_graphics_pipeline(&self, handle: B::Pipeline) {

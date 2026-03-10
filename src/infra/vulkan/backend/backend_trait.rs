@@ -1,15 +1,13 @@
 use crate::core::types::MemoryPropertyFlags;
 use crate::{
-	domain::ImageLayout,
 	core::types::{
 		AccessFlags2,
-		Viewport,
-		DescriptorBinding,
 		BufferUsage,
 		ClearValue,
 		CommandBufferUsageFlags,
 		CommandPoolFlags,
 		CullMode,
+		DescriptorBinding,
 		DescriptorPoolSize,
 		DescriptorType,
 		Extent3D,
@@ -18,18 +16,19 @@ use crate::{
 		FrontFace,
 		GraphicsPipelineDesc,
 		ImageAspect,
-		Rect2D,
 		ImageUsage,
 		IndexType,
 		MemoryRequirements,
 		PipelineBindPoint,
 		PipelineStageFlags2,
 		PushConstantRange,
-	
+		Rect2D,
 		SamplerAddressMode,
 		ShaderStages,
+		Viewport,
 	},
-	core::{Backend, CommandOps, DeviceOps, ImageBarrierInfo,SemaphoreSubmit, BufferBarrierInfo2,	RenderingDesc,},
+	core::{Backend, BufferBarrierInfo2, CommandOps, DeviceOps, ImageBarrierInfo, RenderingDesc, SemaphoreSubmit, },
+	domain::ImageLayout,
 };
 
 use ash::vk;
@@ -94,6 +93,8 @@ impl Backend for VulkanBackend {
 	type Format 			= Format;
 	fn image_from_raw(raw: u64) -> vk::Image { vk::Image::from_raw(raw) }
 	fn buffer_from_raw(raw: u64) -> vk::Buffer { vk::Buffer::from_raw(raw) }
+	fn buffer_handle(buf: vk::Buffer) -> u64 { buf.as_raw() }
+	
 	fn descriptor_set_from_raw(raw: u64) -> vk::DescriptorSet { vk::DescriptorSet::from_raw(raw) }
 	
 	fn null_semaphore() -> vk::Semaphore { vk::Semaphore::null() }
@@ -822,7 +823,7 @@ fn layout_to_vk(l: ImageLayout) -> vk::ImageLayout {
 		ImageLayout::DepthReadOnly => vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
 	}
 }
-use  crate::domain::Stage;
+use crate::domain::Stage;
 fn stage_to_vk(s: Stage) -> vk::PipelineStageFlags2 {
 	match s {
 		Stage::None => vk::PipelineStageFlags2::NONE,

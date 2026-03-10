@@ -1,9 +1,9 @@
-use std::marker::PhantomData;
-use crate::core::{Backend, DeviceOps};
-use crate::core::types::CommandPoolFlags;
-use crate::core::type_state_queue::sealed::QueueHandle;
 use super::state;
 use super::CommandBuffer;
+use crate::core::type_state_queue::sealed::QueueHandle;
+use crate::core::types::CommandPoolFlags;
+use crate::core::{Backend, DeviceOps};
+use std::marker::PhantomData;
 
 pub struct CommandPool<'dev, B: Backend> {
 	device: &'dev B::Device,
