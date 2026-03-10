@@ -34,6 +34,15 @@ EXEC --> VK[Vulkan Backend]
 VK --> GPU[GPU]
 ```
 
+## Development
+
+For a peek into active development and ongoing work:
+- [Issue Tracker](https://github.com/RITIKESHDUTT/gLexShrD/issues)
+
+![Issues](https://img.shields.io/github/issues/RITIKESHDUTT/gLexShrD)
+![Open Issues](https://img.shields.io/github/issues-raw/RITIKESHDUTT/gLexShrD)
+![Closed Issues](https://img.shields.io/github/issues-closed/RITIKESHDUTT/gLexShrD)
+
 ## System Overview
 
 | Property | Current State |
