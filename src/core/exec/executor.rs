@@ -1,3 +1,4 @@
+use crate::domain::DescriptorSetId;
 use crate::core::types::IndexType;
 use {
 	crate::{
@@ -36,6 +37,7 @@ pub struct Executor<'dev, B: Backend> {
 	compute: Option<WorkLane<'dev, Queue<Compute, B>, B>>,
 	transfer: Option<WorkLane<'dev, Queue<Transfer, B>, B>>,
 	present_sync: Option<PresentSync<B>>,
+	descriptor_sets: Vec<B::DescriptorSet>,
 }
 
 pub struct RenderTarget<'a, B: Backend> {
@@ -184,6 +186,7 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 			compute: None,
 			transfer: None,
 			present_sync: None,
+			descriptor_sets: Vec::new(),
 		}
 	}
 	
@@ -261,11 +264,19 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 	pub fn graphics_timeline_handle(&self) -> B::Semaphore {
 		self.graphics_lane().timeline_handle()
 	}
+	pub fn register_descriptor_set(&mut self, handle: B::DescriptorSet) -> DescriptorSetId {
+		let id = DescriptorSetId(self.descriptor_sets.len() as u32);
+		self.descriptor_sets.push(handle);
+		id
+	}
+	pub fn clear_descriptor_sets(&mut self) {
+		self.descriptor_sets.clear();
+	}
 	
 	// ── CHANGED: FrameGraph<B> (no 'f), match on domain, replay commands ──
 	pub fn execute(
 		&mut self,
-		graph: FrameGraph<B>,
+		graph: FrameGraph,
 		swap_img: SwapchainImage<'dev, img_state::Undefined, B>,
 		target: RenderTarget<'_, B>,
 		pipelines: &PipelineManager<'dev, B>,
@@ -275,7 +286,7 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 		let ExecutionOrder { ordered_passes, barriers } = compiled.order;
 		let mut passes: HashMap<PassId, CompiledPass> = compiled.passes.into_iter().map(|p| (p.id, p)).collect();
 		let resources = compiled.resources;
-		let descriptor_sets = compiled.descriptor_sets; // NEW: carried from FrameGraph
+		let descriptor_sets = &self.descriptor_sets;
 		
 		let mut final_graphics_val: u64 = 0;
 		
