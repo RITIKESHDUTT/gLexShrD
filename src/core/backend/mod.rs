@@ -1,10 +1,10 @@
 pub mod types;
 mod helpers_for_types;
+pub use helpers_for_types::{data_size, push_range, push_size, shader_stages, vertex_attr, vertex_binding, vertex_config, vertex_stride};
 use std::error::Error;
-pub use helpers_for_types::{data_size, push_size, vertex_stride, vertex_config, shader_stages, push_range, vertex_binding, vertex_attr};
 
+use crate::domain::{Access, ImageLayout, Stage};
 use types::*;
-use crate::domain::{Stage, Access, ImageLayout};
 
 // ── Backend Trait ───────────────────────────────────────────
 pub trait Backend: 'static + Sized {
@@ -30,6 +30,7 @@ pub trait Backend: 'static + Sized {
 	
 	fn image_from_raw(raw: u64) -> Self::Image;
 	fn buffer_from_raw(raw: u64) -> Self::Buffer;
+	fn buffer_handle(buf: Self::Buffer) -> u64;
 	fn descriptor_set_from_raw(raw: u64) -> Self::DescriptorSet;
 	fn null_semaphore() -> Self::Semaphore;
 	fn null_fence() -> Self::Fence;

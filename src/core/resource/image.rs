@@ -1,16 +1,16 @@
-use crate::core::{ImageBarrierInfo, Backend, DeviceOps, CommandOps};
+use crate::core::cmd::{CommandBuffer, Recording};
 use crate::core::types::{
 	Extent2D,
+	Extent3D,
 	Format,
 	ImageAspect,
 	ImageUsage,
-	Extent3D,
 	QUEUE_FAMILY_IGNORED
 };
-use crate::core::cmd::{Recording, CommandBuffer};
+use crate::core::{Backend, CommandOps, DeviceOps, ImageBarrierInfo};
+use crate::domain::{Access, ImageLayout, Stage};
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-use crate::domain::{ImageLayout, Stage, Access};
 
 pub mod img_state {
 	pub struct Undefined;

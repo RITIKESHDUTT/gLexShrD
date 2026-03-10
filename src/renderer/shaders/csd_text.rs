@@ -1,5 +1,5 @@
-use crate::renderer::prelude::*;
 use crate::renderer::pipelines::TextPush;
+use crate::renderer::prelude::*;
 
 #[fragment_shader]
 fn text_frag(

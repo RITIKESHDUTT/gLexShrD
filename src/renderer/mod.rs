@@ -4,7 +4,8 @@ mod prelude;
 mod shaders;
 mod windowed;
 
-pub use pipelines::{CsdPipelines, TextSet, TextPush, RectPush};
-pub use shader_utils::{UNIT_QUAD, Vertex2D,};
-pub use windowed::{CsdResources, record_csd};
 pub use pipelines::GlyphAtlas;
+pub use pipelines::{CsdPipelines, RectPush, TextPush, TextSet};
+pub use shader_utils::{Vertex2D, UNIT_QUAD, };
+pub use windowed::{CsdResources, build_csd_commands};
+pub use shaders::{PARTICLE_FRAG_SPV, PARTICLE_COMP_SPV, PARTICLE_VERT_SPV};

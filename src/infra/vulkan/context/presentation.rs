@@ -1,13 +1,13 @@
-use glex_platform::platform::Window;
-use crate::infra::platform::Surface;
 use crate::core::type_state_queue::sealed::QueueHandle;
-use crate::core::types::MemoryRequirements;
-use crate::core::types::MemoryPropertyFlags;
-use crate::core::types::Format;
 use crate::core::types::Extent2D;
-use crate::infra::vulkan::backend::{Swapchain, VulkanBackend, PhysicalDevice, VulkanInstance};
+use crate::core::types::Format;
+use crate::core::types::MemoryPropertyFlags;
+use crate::core::types::MemoryRequirements;
 use crate::core::Backend;
+use crate::infra::platform::Surface;
+use crate::infra::vulkan::backend::{PhysicalDevice, Swapchain, VulkanBackend, VulkanInstance};
 use crate::infra::VulkanContext;
+use glex_platform::platform::Window;
 
 
 /// Separate from `VulkanContext` — presentation is optional.

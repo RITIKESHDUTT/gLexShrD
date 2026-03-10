@@ -11,7 +11,8 @@
 /// which recorder view
 ///
 /// which synchronization rules
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DescriptorSetId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassDomain {

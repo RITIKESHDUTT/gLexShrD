@@ -1,5 +1,5 @@
-use ash::vk;
 use super::entry::VulkanEntry;
+use ash::vk;
 use std::sync::Arc;
 
 pub struct VulkanInstance {

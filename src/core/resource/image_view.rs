@@ -1,6 +1,5 @@
-
-use crate::core::backend::{Backend, DeviceOps};
 use crate::core::backend::types::{Format, ImageAspect};
+use crate::core::backend::{Backend, DeviceOps};
 
 pub struct ImageView<'dev, B: Backend> {
 	device: &'dev B::Device,

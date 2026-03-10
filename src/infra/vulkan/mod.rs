@@ -1,27 +1,28 @@
-use glex_platform::platform::Window;
-use crate::infra::platform::VulkanWindow;
-use crate::infra::platform::WaylandWindowImpl;
-use crate::infra::platform::Surface;
-use glex_platform::platform::{WindowConfig, ControlFlow};
-use crate::infra::platform::WaylandPlatform;
-use glex_platform::csd::{CsdTheme, Color};
-use glex_platform::csd::build::DecorationBuilder;
-use glex_platform::csd::build::StandardDecorations;
-use crate::renderer::record_csd;
+use crate::core::FrameGraph;
+use crate::core::PresentSync;
 use crate::core::RenderTarget;
 use crate::core::SwapchainImage;
-use crate::core::PresentSync;
-use crate::core::FrameGraph;
+use crate::infra::platform::Surface;
+use crate::infra::platform::VulkanWindow;
+use crate::infra::platform::WaylandPlatform;
+use crate::infra::platform::WaylandWindowImpl;
+use glex_platform::csd::build::DecorationBuilder;
+use glex_platform::csd::build::StandardDecorations;
+use glex_platform::csd::{Color, CsdTheme};
+use glex_platform::platform::Window;
+use glex_platform::platform::{ControlFlow, WindowConfig};
+use crate::renderer::build_csd_commands;
+
 mod backend;
-use crate::renderer::TextSet;
 use crate::core::DescriptorLayout;
+use crate::renderer::TextSet;
 pub use backend::*;
 mod context;
-pub use context::{Rendering, Presentation, GpuContext, VulkanContext};
-use crate::core::{PipelineManager};
+use crate::core::PipelineManager;
 use crate::lin_al::Vec2;
 use crate::renderer::CsdPipelines;
 use crate::renderer::CsdResources;
+pub use context::{GpuContext, Presentation, Rendering, VulkanContext};
 use glex_platform::platform::Platform;
 
 // Dropped first → last (declaration order = drop order)
@@ -108,10 +109,7 @@ impl<'dev> Glex<'dev> {
 		let resources = &self.csd_resources;
 		let csd = &self.csd_pipelines;
 		
-		graph.add_graphics_pass(None).build(|recorder| {
-			record_csd(recorder, resources, csd, &draw, screen_size);
-		});
-
+		build_csd_commands(&mut graph, resources, csd, &draw, screen_size);
 		
 		let signal_val = self.gpu.executor_mut()
 							 .execute(graph, swap_img, target, &self.pipelines)?;

@@ -1,11 +1,11 @@
-use crate::infra::platform::Surface;
-use crate::core::type_state_queue::{
-	sealed::QueueHandle, Queue,
-	Compute, Present, Graphics,Transfer
-};
 use super::{PhysicalDevice, VulkanInstance};
-use crate::infra::vulkan::backend::VulkanDevice;
+use crate::core::type_state_queue::{
+	sealed::QueueHandle, Compute,
+	Graphics, Present, Queue, Transfer
+};
+use crate::infra::platform::Surface;
 use crate::infra::vulkan::backend::VulkanBackend;
+use crate::infra::vulkan::backend::VulkanDevice;
 use ash::vk;
 
 pub struct QueueDiscovery {

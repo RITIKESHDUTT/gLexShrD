@@ -1,4 +1,4 @@
-use crate::core::exec::{RasterConfig,DepthConfig, BlendConfig, RenderTargetConfig};
+use crate::core::exec::{BlendConfig, DepthConfig, RasterConfig, RenderTargetConfig};
 use crate::core::VertexConfig;
 use std::ffi::CStr;
 use std::ops::BitOr;
@@ -332,9 +332,7 @@ impl PushConstantRange {
 	pub const fn offset(&self) -> u32 { self.offset }
 	pub const fn size(&self) -> u32 { self.size }
 }
-// ── Descriptor Binding ──────────────────────────────────────
-
-// ── Descriptor Binding ──────────────────────────────────────
+// ── Descriptor Binding ─────────────────────────────────────
 
 #[derive(Debug, Copy, Clone)]
 pub struct DescriptorBinding {
@@ -644,7 +642,7 @@ impl std::ops::BitOr for AccessFlags2 {
 	fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
 }
 
-use crate::domain::{Stage, Access};
+use crate::domain::{Access, Stage};
 impl From<Stage> for PipelineStageFlags2 {
 	fn from(s: Stage) -> Self {
 		match s {

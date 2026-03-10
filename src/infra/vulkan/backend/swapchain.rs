@@ -1,12 +1,12 @@
-use crate::infra::platform::Surface;
+use super::instance::VulkanInstance;
+use super::physical_device::PhysicalDevice;
 use crate::core::types::Format;
 use crate::core::BinarySemaphore;
 use crate::core::ImageView;
-use ash::vk;
-use crate::infra::vulkan::backend::VulkanDevice;
-use super::instance::VulkanInstance;
-use super::physical_device::PhysicalDevice;
+use crate::infra::platform::Surface;
 use crate::infra::vulkan::backend::VulkanBackend;
+use crate::infra::vulkan::backend::VulkanDevice;
+use ash::vk;
 
 pub struct Swapchain<'dev,> {
 	device: &'dev VulkanDevice,

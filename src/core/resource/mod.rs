@@ -6,10 +6,10 @@ mod pool;
 mod sampler;
 mod image_view;
 
-pub use buffer::{Buffer};
-pub use image::{Image, SwapchainImage, img_state, image_barrier};
-pub use descriptor::{DescriptorSet,desc_state, DescriptorLayout, Binding, DescriptorSetInterface};
 pub use buf_state::*;
-pub use pool::{DescriptorPool, };
-pub use sampler::Sampler;
+pub use buffer::Buffer;
+pub use descriptor::{desc_state, Binding, DescriptorLayout, DescriptorSet, DescriptorSetInterface};
+pub use image::{image_barrier, img_state, Image, SwapchainImage};
 pub use image_view::ImageView;
+pub use pool::DescriptorPool;
+pub use sampler::Sampler;

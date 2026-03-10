@@ -1,16 +1,16 @@
-use crate::core::cmd::{CommandBuffer, Recording, Inside};
 use crate::core::backend::{
-	CommandOps, Backend, DeviceOps,
 	types::{
-		ShaderStages,
-		PipelineBindPoint,
 		DescriptorBinding,
 		DescriptorType,
-	},
+		PipelineBindPoint,
+		ShaderStages,
+	}, Backend, CommandOps,
+	DeviceOps,
 };
+use crate::core::cmd::{CommandBuffer, Inside, Recording};
 
 use crate::core::resource::{DescriptorPool, Sampler};
-use crate::domain::{ImageLayout};
+use crate::domain::ImageLayout;
 use std::marker::PhantomData;
 //
 // ─────────────────────────────────────────────────────────────

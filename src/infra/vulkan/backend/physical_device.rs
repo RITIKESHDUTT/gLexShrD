@@ -1,6 +1,6 @@
+use super::VulkanInstance;
 use crate::core::types::MemoryPropertyFlags;
 use crate::core::types::MemoryRequirements;
-use super::VulkanInstance;
 use ash::vk;
 
 pub struct PhysicalDevice {

@@ -1,7 +1,7 @@
-use std::marker::PhantomData;
-use crate::core::backend::{Backend, CommandOps, ImageBarrierInfo, BufferBarrierInfo2};
-use crate::core::types::{CommandBufferUsageFlags, Viewport, Rect2D};
 use super::state;
+use crate::core::backend::{Backend, BufferBarrierInfo2, CommandOps, ImageBarrierInfo};
+use crate::core::types::{CommandBufferUsageFlags, Rect2D, Viewport};
+use std::marker::PhantomData;
 
 pub struct CommandBuffer<'dev, S, B: Backend, R = state::Outside> {
 	pub device: &'dev B::Device,

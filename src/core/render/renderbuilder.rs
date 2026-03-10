@@ -1,6 +1,6 @@
+use crate::core::backend::types::{AttachmentLoadOp, AttachmentStoreOp, ClearValue, Extent2D, Offset2D, Rect2D};
 use crate::core::backend::Backend;
-use crate::core::backend::types::{Extent2D, Rect2D, Offset2D, AttachmentLoadOp, AttachmentStoreOp, ClearValue};
-use crate::core::backend::{RenderingDesc, ColorAttachment, DepthAttachment};
+use crate::core::backend::{ColorAttachment, DepthAttachment, RenderingDesc};
 use crate::core::ImageView;
 use crate::domain::ImageLayout;
 

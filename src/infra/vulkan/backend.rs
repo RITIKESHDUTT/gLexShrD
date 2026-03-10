@@ -9,10 +9,10 @@ mod swapchain;
 pub mod error;
 
 
+pub use self::device::LogicalDevice;
+pub use self::entry::VulkanEntry;
 pub use self::instance::VulkanInstance;
 pub use self::physical_device::PhysicalDevice;
 pub use self::queue::{QueueDiscovery, QueueLane};
-pub use self::entry::VulkanEntry;
-pub use self::device::LogicalDevice;
 pub use self::swapchain::Swapchain;
-pub use backend_trait::{VulkanDevice, VulkanBackend};
+pub use backend_trait::{VulkanBackend, VulkanDevice};

@@ -1,10 +1,10 @@
 use crate::core::types::{
-	GraphicsPipelineDesc,
-	PrimitiveTopology, Format, PushConstantRange,
-	BlendFactor, BlendOp, FrontFace, CullMode,
-	CompareOp, PolygonMode, VertexBindingDesc, VertexAttributeDesc,
+	BlendFactor,
+	BlendOp, CompareOp, CullMode,
+	Format, FrontFace, GraphicsPipelineDesc, PolygonMode,
+	PrimitiveTopology, PushConstantRange, VertexAttributeDesc, VertexBindingDesc,
 };
-use crate::core::{	Backend, DeviceOps,};
+use crate::core::{Backend, DeviceOps, };
 
 // ── Storage ──────────────────────────────────────────────
 pub struct PipelineSlot<B: Backend> {
