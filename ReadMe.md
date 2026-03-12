@@ -33,14 +33,26 @@ GRAPH --> EXEC[Executor]
 EXEC --> VK[Vulkan Backend]
 VK --> GPU[GPU]
 ```
+## Repository Status
 
+⚠ **Partial Architecture Published**
+
+This repository currently contains **only a subset of the engine architecture**.  
+Several internal crates and core modules are **not included in the public repository yet**.
+
+As a result:
+
+- The project **will not compile if cloned directly**
+- Missing modules will be added progressively as the architecture stabilizes
+- The repository is intended **for architectural inspection and development tracking**, not for building or production use
+
+The issue tracker reflects the **actual development process**, even when the corresponding code has not been published yet.
 ## Development
 
 For a peek into active development and ongoing work:
 - [Issue Tracker](https://github.com/RITIKESHDUTT/gLexShrD/issues)
 
 ![Issues](https://img.shields.io/github/issues/RITIKESHDUTT/gLexShrD)
-![Open Issues](https://img.shields.io/github/issues-raw/RITIKESHDUTT/gLexShrD)
 ![Closed Issues](https://img.shields.io/github/issues-closed/RITIKESHDUTT/gLexShrD)
 
 ## System Overview
