@@ -28,7 +28,7 @@ impl LogicalDevice {
 		physical: &PhysicalDevice,
 		discovery: &QueueDiscovery,
 		extensions: &[*const i8],
-	)-> Result<(VulkanDevice), <vb as Backend>::Error> {
+	)-> Result<VulkanDevice, <vb as Backend>::Error> {
 		let priorities = [1.0f32];
 		let mut unique_indices = std::collections::HashSet::new();
 		unique_indices.insert(discovery.graphics);

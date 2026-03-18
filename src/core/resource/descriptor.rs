@@ -1,3 +1,6 @@
+use crate::renderer::ComputeStorage;
+use crate::renderer::VertexStorage;
+use crate::renderer::GfxStorage;
 use crate::core::backend::{
 	types::{
 		DescriptorBinding,
@@ -262,8 +265,6 @@ impl<'dev, B: Backend, Iface> DescriptorSet<'dev, desc_state::Updated, B, Iface>
 // ─────────────────────────────────────────────────────────────
 //
 
-/// Uniform buffer binding at slot 0
-// camera uniform buffer.
 pub struct GlobalUBO;
 
 impl Binding for GlobalUBO {
@@ -334,5 +335,63 @@ impl<'dev, B: Backend, Iface> Drop for DescriptorLayout<'dev, B, Iface>
 {
 	fn drop(&mut self) {
 		self.device.destroy_descriptor_set_layout(self.handle);
+	}
+}
+
+//================================
+
+impl<'dev, B: Backend, Iface: DescriptorSetInterface>
+DescriptorSet<'dev, desc_state::Updated, B, Iface>
+	where
+		B::Device: DeviceOps<B>,
+{
+	pub fn build(
+		device: &'dev B::Device,
+		pool: &DescriptorPool<'_, B>,
+		layout: &DescriptorLayout<'dev, B, Iface>,
+		f: impl FnOnce(DescriptorSet<'dev, desc_state::Allocated, B, Iface>)
+			-> DescriptorSet<'dev, desc_state::Allocated, B, Iface>,
+	) -> Result<Self, B::Error> {
+		let set = DescriptorSet::allocate(device, pool, layout)?;
+		let set = f(set);
+		Ok(set.finish())
+	}
+}
+
+impl<'dev, B: Backend>
+DescriptorSet<'dev, desc_state::Updated, B, GfxStorage>
+	where
+		B::Device: DeviceOps<B>,
+{
+	pub fn vertex_storage(
+		device: &'dev B::Device,
+		pool: &DescriptorPool<'_, B>,
+		layout: &DescriptorLayout<'dev, B, GfxStorage>,
+		buffer: B::Buffer,
+		size: u64,
+	) -> Result<Self, B::Error> {
+		DescriptorSet::build(device, pool, layout, |set| {
+			set.write_buffer::<VertexStorage>(buffer, size)
+		})
+	}
+}
+
+impl<'dev, B: Backend>
+DescriptorSet<'dev, desc_state::Updated, B, ComputeStorage>
+	where
+		B::Device: DeviceOps<B>,
+{
+	pub fn storage_pair(
+		device: &'dev B::Device,
+		pool: &DescriptorPool<'_, B>,
+		layout: &DescriptorLayout<'dev, B, ComputeStorage>,
+		read: B::Buffer,
+		write: B::Buffer,
+		size: u64,
+	) -> Result<Self, B::Error> {
+		DescriptorSet::build(device, pool, layout, |set| {
+			set.write_buffer::<StorageRead>(read, size)
+			   .write_buffer::<StorageWrite>(write, size)
+		})
 	}
 }

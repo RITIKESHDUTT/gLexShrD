@@ -84,8 +84,7 @@ impl<'dev, Q, B: Backend> WorkLane<'dev, Q, B>
 		Ok(val)
 	}
 	
-	#[warn(deprecated)]
-	//superseded by submit_binary
+	#[deprecated]
 	pub fn submit_present(
 		&mut self,
 		device: &B::Device,
@@ -152,4 +151,23 @@ impl<'dev, Q, B: Backend> WorkLane<'dev, Q, B>
 		device.queue_submit2(self.queue.raw(), None, &[], &signals)?;
 		Ok(val)
 	}
+	
+	
+	pub fn submit_semaphore_only(
+		&mut self,
+		device: &B::Device,
+		binary_waits: &[SemaphoreSubmit<B>],
+		binary_signals: &[SemaphoreSubmit<B>],
+	) -> Result<u64, B::Error> {
+		let val = self.next_value();
+		let mut signals: Vec<SemaphoreSubmit<B>> = vec![SemaphoreSubmit {
+			semaphore: self.timeline.handle(),
+			value: val,
+			stage: Stage::All,
+		}];
+		signals.extend_from_slice(binary_signals);
+		device.queue_submit2(self.queue.raw(), None, &binary_waits, &signals)?;
+		Ok(val)
+	}
+	
 }

@@ -1,6 +1,9 @@
+use std::fmt::Debug;
+use glex_shader_macro::shader_binding;
 use crate::renderer::prelude::*;
 use crate::renderer::shader_utils::build_graphics_pipeline;
 
+#[push_constant]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct TextPush {
@@ -16,9 +19,11 @@ pub struct TextPush {
 
 // size_of = 64
 
+
 binding!(
 	GlyphAtlas,
 	index = 0,
+	set = 0,
 	type = DescriptorType::CombinedImageSampler,
 	stages = ShaderStages::FRAGMENT
 );
@@ -38,7 +43,7 @@ pub fn create_text_pipeline<B: Backend>(
 	color_format: Format,
 ) -> Result<PipelineId, B::Error>
 	where
-		B::Device: DeviceOps<B>,
+		B::Device: DeviceOps<B>, <B as Backend>::Pipeline: Debug
 {
 	let layout = TextSet::BINDINGS;
 	let desc_layout = device.create_descriptor_set_layout(layout)

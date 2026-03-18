@@ -1,5 +1,6 @@
 use crate::core::backend::types::DescriptorPoolSize;
 use crate::core::backend::{Backend, DeviceOps};
+use crate::core::types::DescriptorType;
 
 pub struct DescriptorPool<'dev, B: Backend> {
 	device: &'dev B::Device,
@@ -18,6 +19,43 @@ impl<'dev, B: Backend> DescriptorPool<'dev, B> {
 	
 	pub fn handle(&self) -> B::DescriptorPool {
 		self.pool
+	}
+}
+impl<'dev, B: Backend> DescriptorPool<'dev, B>
+	where
+		B::Device: DeviceOps<B>,
+{
+	pub fn compute_storage(
+		device: &'dev B::Device,
+		max_sets: u32,
+	) -> Result<Self, B::Error> {
+		Self::new(
+			device,
+			max_sets,
+			&[DescriptorPoolSize {
+				descriptor_type: DescriptorType::StorageBuffer,
+				count: max_sets * 2, // read + write per set
+			}],
+		)
+	}
+}
+
+impl<'dev, B: Backend> DescriptorPool<'dev, B>
+	where
+		B::Device: DeviceOps<B>,
+{
+	pub fn gfx_vertex_storage(
+		device: &'dev B::Device,
+		max_sets: u32,
+	) -> Result<Self, B::Error> {
+		Self::new(
+			device,
+			max_sets,
+			&[DescriptorPoolSize {
+				descriptor_type: DescriptorType::StorageBuffer,
+				count: max_sets,
+			}],
+		)
 	}
 }
 

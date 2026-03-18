@@ -2,7 +2,7 @@ use crate::core::exec::BarrierEdge;
 use crate::domain::PassDomain;
 use crate::domain::ResourceId;
 use crate::domain::UsageIntent;
-
+use crate::core::types::QUEUE_FAMILY_IGNORED;
 /// Barrier with queue ownership resolved.
 /// No Vulkan types — just domain intents + queue family indices.
 #[derive(Debug, Clone, Copy)]
@@ -20,11 +20,13 @@ pub fn resolve_barrier(
 ) -> BarrierDesc {
 	let src = domain_to_family(edge.src_domain);
 	let dst = domain_to_family(edge.dst_domain);
-	let (src_qf, dst_qf) = if src == dst {
-		(u32::MAX, u32::MAX)  // same queue — no ownership transfer
-	} else {
-		(src, dst)
-	};
+	
+	let (src_qf, dst_qf) =
+		if src == dst {
+			(QUEUE_FAMILY_IGNORED, QUEUE_FAMILY_IGNORED)
+		} else {
+			(src, dst)
+		};
 	BarrierDesc {
 		resource: edge.resource,
 		src_usage: edge.src_usage,

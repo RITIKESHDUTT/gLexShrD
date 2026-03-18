@@ -25,9 +25,7 @@ impl<'dev, B: Backend> TimelineSemaphore<'dev, B> {
 		self.device.signal_semaphore(self.semaphore, value)
 	}
 
-	/// Queries the current value of the semaphore on the GPU.
-	/// This is non-blocking and provides the "Live" hardware progress.
-	/// Queries the current value of the semaphore on the GPU.
+	/// Non-blocking query of GPU-side semaphore value.
 	pub fn query(&self) -> Result<u64, B::Error> {
 		self.device.query_semaphore(self.semaphore)
 	}

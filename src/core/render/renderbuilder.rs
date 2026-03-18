@@ -7,14 +7,16 @@ use crate::domain::ImageLayout;
 pub struct RenderingInfoBuilder<B: Backend> {
 	color_attachments: Vec<ColorAttachment<B>>,
 	depth_attachment: Option<DepthAttachment<B>>,
+	offset: Offset2D,
 	extent: Extent2D,
 }
 
 impl<B: Backend> RenderingInfoBuilder<B> {
-	pub fn new(extent: Extent2D) -> Self {
+	pub fn new(offset: Offset2D, extent: Extent2D) -> Self {
 		Self {
 			color_attachments: Vec::new(),
 			depth_attachment: None,
+			offset,
 			extent,
 		}
 	}
@@ -53,9 +55,10 @@ impl<B: Backend> RenderingInfoBuilder<B> {
 	}
 	
 	pub fn build(self) -> RenderingDesc<B> {
+		let offset = self.offset;
 		RenderingDesc {
 			area: Rect2D::new(
-				Offset2D::new(0, 0),
+				offset,
 				self.extent,
 			),
 			color_attachments: self.color_attachments,

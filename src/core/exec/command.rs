@@ -4,7 +4,7 @@ use crate::domain::DescriptorSetId;
 use crate::domain::ResourceId;
 
 pub enum PassCommand {
-	PushConstants {range: PushConstantRange, data: [u8; 128]},
+	PushConstants {range: PushConstantRange, data:  Box<[u8]>},
 	Draw { vertex_count: u32 },
 	DrawIndexed { index_count: u32, instance_count: u32, first_index: u32 },
 	Dispatch { x: u32, y: u32, z: u32 },
@@ -12,7 +12,7 @@ pub enum PassCommand {
 	BindVertexBuffer(ResourceId),
 	BindIndexBuffer(ResourceId),
 	BindPipeline(PipelineId),
-	BindDescriptorSet(DescriptorSetId)
+	BindDescriptorSet(DescriptorSetId),
 }
 
 
@@ -20,5 +20,10 @@ pub enum PassCommand {
 /// Used to fill PassCommand push constant data.
 #[inline]
 pub fn push_data<T: Copy>(data: &T) -> &[u8] {
-	unsafe { std::slice::from_raw_parts(data as *const T as *const u8, std::mem::size_of::<T>()) }
+	unsafe {
+		std::slice::from_raw_parts(
+			data as *const T as *const u8,
+			std::mem::size_of::<T>(),
+		)
+	}
 }

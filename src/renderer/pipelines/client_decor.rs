@@ -1,7 +1,9 @@
+use std::fmt::Debug;
 use crate::lin_al::{Vec2, Vec4};
 use crate::renderer::prelude::*;
 use crate::renderer::shader_utils::build_graphics_pipeline;
 // ── Push constants (match shader layout) ────────────────────
+#[push_constant]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct RectPush {
@@ -25,7 +27,7 @@ pub fn create_rect_pipeline<B: Backend>(
 	color_format: Format,
 ) -> Result<PipelineId, B::Error>
 	where
-		B::Device: DeviceOps<B>,
+		B::Device: DeviceOps<B>, <B as Backend>::Pipeline: Debug
 {
 	build_graphics_pipeline(
 		pipelines,

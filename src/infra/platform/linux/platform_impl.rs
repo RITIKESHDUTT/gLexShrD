@@ -2,13 +2,14 @@
 //!
 //! Owns all OS-level types. Translates Wayland events into core vocabulary.
 //! Core never sees anything in this file.
+use glex_platform::platform::ScrollDelta;
+use glex_platform::platform::DeviceEvent;
 use crate::core::Backend;
 use crate::infra::platform::Surface;
 use crate::infra::vulkan::VulkanEntry;
 use crate::infra::vulkan::VulkanInstance;
 use ash::vk;
-
-use crate::infra::platform::surface::WaylandHandles;
+use arrayvec::ArrayVec;
 use glex_platform::csd::hit_test::hit_test;
 use {
 	crate::infra::VulkanBackend,
@@ -36,7 +37,7 @@ use {
 		wayland_available, WaylandWindow, WlEvent},
 	std::sync::Arc
 };
-
+use glex_platform::csd::CsdTheme;
 // ─────────────────────────────────────────────────────────────────────────────
 // Error
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,117 +77,190 @@ impl Platform for WaylandPlatform {
 	type Error  = WaylandError;
 	
 	fn create_window(&mut self, config: WindowConfig) -> Result<Self::Window, Self::Error> {
-		let inner = WaylandWindow::create(config.width, config.height)
+		let surface_w = config.width;
+		let surface_h = config.height;
+		let inner = WaylandWindow::create(surface_w, surface_h)
 			.map_err(WaylandError::WindowCreationFailed)?;
-		
 		let id = WindowId::new(0, self.next_generation);
+		
 		self.next_generation += 1;
 		
-		let dec_layout = DecorationLayout::new(config.width, config.height, false);
+		let dec_layout = DecorationLayout::new(surface_w, surface_h, false, false);
 		let dec_state  = DecorationState::new();
-		
-		Ok(WaylandWindowImpl { inner, id, dec_layout, dec_state })
+		Ok(WaylandWindowImpl { inner, id, config: config.clone(), dec_layout, dec_state, csd_theme: CsdTheme::default(), last_extent: Extent2D::new(surface_w, surface_h), pending_configure: false, is_maximized: false, is_fullscreen: false})
 	}
 	
-	fn pump(&mut self, window: &mut Self::Window, callback: impl FnMut(Event)) -> ControlFlow {
-		window.pump(callback)
+	fn pump(&mut self, window: &mut Self::Window) -> (ControlFlow, ArrayVec<Event, 64>) {
+		window.pump()
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WaylandWindowImpl — impl Window + pump
 // ─────────────────────────────────────────────────────────────────────────────
+
 pub struct WaylandWindowImpl {
-	
 	pub inner: WaylandWindow,
-	id:        WindowId,
-	/// Decoration geometry — rebuilt on resize.
-	dec_layout:     DecorationLayout,
-	/// Decoration visual state — updated on pointer events.
-	dec_state:      DecorationState,
+	id: WindowId,
+	dec_layout: DecorationLayout,
+	config: WindowConfig,
+	dec_state: DecorationState,
+	csd_theme: CsdTheme,
+	last_extent: Extent2D,
+	pending_configure: bool,
+	is_maximized: bool,
+	is_fullscreen: bool,
 }
 
 impl WaylandWindowImpl {
-	/// Call once per frame before rendering.
-	///
-	/// Flushes, dispatches, and translates all pending Wayland events into
-	/// [`Event`]s, feeding each to `callback`.
-	/// Returns [`ControlFlow::Exit`] if the window was closed.
-	/// Call once per frame before rendering.
-	///
-	/// Flushes, dispatches Wayland events, handles CSD internally,
-	/// and translates remaining events into core `Event`s for `callback`.
-	///
-	/// Returns `ControlFlow::Exit` if the window should close.
-	pub fn pump<F>(&mut self, mut callback: F) -> ControlFlow
-				   where F: FnMut(Event),
-	{
+	/// Dispatch Wayland events, return control flow + translated events.
+	pub fn pump(&mut self) -> (ControlFlow, ArrayVec<Event, 64>) {
+		self.inner.display.dispatch_pending();
 		self.inner.display.flush();
+		
 		if self.inner.display.prepare_read() == 0 {
 			self.inner.display.read_events();
+		} else {
+			self.inner.display.cancel_read();
 		}
+		
 		self.inner.display.dispatch_pending();
 		
 		let mut cf = ControlFlow::Continue;
+		let mut events: ArrayVec<Event, 64> = ArrayVec::new();
+		#[inline]
+		fn emit(events: &mut ArrayVec<Event, 64>,  id: WindowId, event: WindowEvent) {
+			events.push(Event::Window { id, event });
+		}
+		
+		#[inline]
+		fn map_button(button: u32) -> MouseButton {
+			match button {
+				0x110 => MouseButton::Left,
+				0x111 => MouseButton::Right,
+				0x112 => MouseButton::Middle,
+				other => MouseButton::Other(other as u16),
+			}
+		}
+		#[inline]
+		fn request_close(cf: &mut ControlFlow, events: &mut ArrayVec<Event, 64>, id: WindowId) {
+			*cf = ControlFlow::Exit;
+			events.push(Event::Window {
+				id,
+				event: WindowEvent::CloseRequested,
+			});
+		}
+		
+		fn pointer_move(
+			window: &mut WaylandWindowImpl,
+			events: &mut ArrayVec<Event, 64>,
+			x: f64,
+			y: f64,
+		) {
+			if window.is_fullscreen {
+				emit(events, window.id, WindowEvent::CursorMoved {
+					x: x as f32,
+					y: y as f32,
+				});
+				return;
+			}
+			
+			let zone = hit_test(&window.dec_layout, x, y);
+			window.dec_state.update_hover(zone);
+			
+			let serial = window.inner.pointer_serial();
+			window.inner.set_cursor_shape(serial, zone.cursor_shape());
+			
+			if zone == HitZone::ClientArea {
+				let (ox, oy) = window.dec_layout.content_offset();
+				
+				emit(events, window.id, WindowEvent::CursorMoved {
+					x: (x - ox) as f32,
+					y: (y - oy) as f32,
+				});
+			}
+		}
 		
 		while let Some(wl) = self.inner.poll_event() {
 			match wl {
 				// ── Close ────────────────────────────────────────────────────
 				WlEvent::Close => {
-					cf = ControlFlow::Exit;
-					callback(Event::Window {
-						id:    self.id,
-						event: WindowEvent::CloseRequested,
-					});
+					request_close(&mut cf, &mut events, self.id);
 				}
 				
 				// ── Resize ───────────────────────────────────────────────────
 				WlEvent::Resize { width, height } => {
-					let wl_maximized = self.inner.maximized();
-					
-					self.dec_state.is_maximized = wl_maximized;
-					
-					self.dec_layout = DecorationLayout::new(
-						width, height, wl_maximized,
-					);
-					callback(Event::Window {
-						id:    self.id,
-						event: WindowEvent::Resized(Extent2D::new(width, height)),
-					});
+					if width == 0 || height == 0 { continue; }
+					let width  = width.max(DecorationLayout::min_width());
+					let height = height.max(DecorationLayout::min_height());
+					let new_extent = Extent2D::new(width, height);
+					if new_extent == self.last_extent { continue; }
+					self.last_extent = new_extent;
+					emit(&mut events, self.id, WindowEvent::Resized(new_extent));
 				}
 				
-				// ── Configure ────────────────────────────────────────────────
-				WlEvent::Configure => {}
+				WlEvent::Configure { serial } => {
+					let wl_maximized  = self.inner.maximized();
+					let wl_fullscreen = self.inner.fullscreen();
+					self.is_maximized  = wl_maximized;
+					self.is_fullscreen = wl_fullscreen;
+					self.inner.ack_configure(serial);
+					self.pending_configure = true;
+				}
 				
 				// ── Pointer enter / motion ───────────────────────────────────
-				WlEvent::PointerEnter { x, y } | WlEvent::PointerMotion { x, y } => {
-					let zone = hit_test(&self.dec_layout, x, y);
-					self.dec_state.update_hover(zone);
-					
-					let serial = self.inner.pointer_serial();
-					self.inner.set_cursor_shape(serial, zone.cursor_shape());
-					
-					
-					if zone == HitZone::ClientArea {
-						callback(Event::Window {
-							id:    self.id,
-							event: WindowEvent::CursorMoved { x: x as f32, y: y as f32 },
-						});
-					}
+				
+				WlEvent::PointerEnter { x, y } => {
+					emit(&mut events, self.id, WindowEvent::CursorEntered);
+					pointer_move(self, &mut events, x, y);
+				}
+				WlEvent::PointerMotion { x, y } => {
+					pointer_move(self, &mut events, x, y);
 				}
 				
 				// ── Pointer leave ────────────────────────────────────────────
+				
 				WlEvent::PointerLeave => {
 					self.dec_state.reset();
-					callback(Event::Window {
-						id:    self.id,
-						event: WindowEvent::CursorLeft,
+					emit(&mut events, self.id, WindowEvent::CursorLeft);
+
+				}
+				WlEvent::FocusGained | WlEvent::FocusLost => {
+					let focused = matches!(wl, WlEvent::FocusGained);
+					
+					emit(
+						&mut events,
+						self.id,
+						WindowEvent::Focused(focused),
+					);
+				}
+				
+				WlEvent::Scroll { axis, value } => {
+					let (x, y) = match axis {
+						0 => (0.0, value as f32),
+						_ => (value as f32, 0.0),
+					};
+					
+					events.push(Event::Device {
+						event: DeviceEvent::MouseWheel {
+							delta: ScrollDelta::Pixels { x, y },
+						},
 					});
 				}
 				
 				// ── Pointer button ───────────────────────────────────────────
 				WlEvent::PointerButton { button, pressed, serial } => {
 					let (px, py) = self.inner.pointer_position();
+					if self.is_fullscreen {
+						let mb = map_button(button);
+						let state = if pressed { ElementState::Pressed } else { ElementState::Released };
+						emit(
+							&mut events,
+							self.id,
+							WindowEvent::MouseInput { button: mb, state },
+						);
+						continue;
+					}
 					let zone = hit_test(&self.dec_layout, px, py);
 					
 					if button == 0x110 {
@@ -206,11 +280,19 @@ impl WaylandWindowImpl {
 									self.dec_state.press(zone);
 								}
 								HitZone::ClientArea => {
-									callback(Event::Window {
-										id:    self.id,
+									let (ox, oy) = self.dec_layout.content_offset();
+									events.push(Event::Window {
+										id: self.id,
 										event: WindowEvent::MouseInput {
 											button: MouseButton::Left,
-											state:  ElementState::Pressed,
+											state: ElementState::Pressed,
+										},
+									});
+									events.push(Event::Window {
+										id: self.id,
+										event: WindowEvent::CursorMoved {
+											x: (px - ox) as f32,
+											y: (py - oy) as f32,
 										},
 									});
 								}
@@ -221,8 +303,8 @@ impl WaylandWindowImpl {
 								match action {
 									ButtonAction::Close => {
 										cf = ControlFlow::Exit;
-										callback(Event::Window {
-											id:    self.id,
+										events.push(Event::Window {
+											id: self.id,
 											event: WindowEvent::CloseRequested,
 										});
 									}
@@ -231,20 +313,14 @@ impl WaylandWindowImpl {
 									}
 									ButtonAction::Maximize => {
 										self.inner.toggle_maximize();
-										self.dec_state.is_maximized =
-											!self.dec_state.is_maximized;
-										let (w, h) = self.inner.size();
-										self.dec_layout = DecorationLayout::new(
-											w, h, self.dec_state.is_maximized,
-										);
 									}
 								}
 							} else if zone == HitZone::ClientArea {
-								callback(Event::Window {
-									id:    self.id,
+								events.push(Event::Window {
+									id: self.id,
 									event: WindowEvent::MouseInput {
 										button: MouseButton::Left,
-										state:  ElementState::Released,
+										state: ElementState::Released,
 									},
 								});
 							}
@@ -260,8 +336,8 @@ impl WaylandWindowImpl {
 						} else {
 							ElementState::Released
 						};
-						callback(Event::Window {
-							id:    self.id,
+						events.push(Event::Window {
+							id: self.id,
 							event: WindowEvent::MouseInput { button: mb, state },
 						});
 					}
@@ -285,46 +361,39 @@ impl WaylandWindowImpl {
 					if pressed {
 						match key {
 							KeyCode::Escape => {
+						
 								cf = ControlFlow::Exit;
-								callback(Event::Window {
+								events.push(Event::Window {
 									id:    self.id,
 									event: WindowEvent::CloseRequested,
 								});
 								continue;
 							}
 							KeyCode::Q if modifiers.ctrl => {
+								
 								cf = ControlFlow::Exit;
-								callback(Event::Window {
+								events.push(Event::Window {
 									id:    self.id,
 									event: WindowEvent::CloseRequested,
 								});
 								continue;
 							}
-							KeyCode::F11 | KeyCode::F8 => {
-								self.inner.toggle_maximize();
-								self.dec_state.is_maximized =
-									!self.dec_state.is_maximized;
-								let (w, h) = self.inner.size();
-								self.dec_layout = DecorationLayout::new(
-									w, h, self.dec_state.is_maximized,
-								);
+							KeyCode::F11 => {
+						
+								self.inner.toggle_fullscreen();
+								self.pending_configure = true;
 								continue;
 							}
+							
 							KeyCode::Enter if modifiers.alt => {
 								self.inner.toggle_maximize();
-								self.dec_state.is_maximized =
-									!self.dec_state.is_maximized;
-								let (w, h) = self.inner.size();
-								self.dec_layout = DecorationLayout::new(
-									w, h, self.dec_state.is_maximized,
-								);
 								continue;
 							}
 							_ => {}
 						}
 					}
 					
-					callback(Event::Window {
+					events.push(Event::Window {
 						id:    self.id,
 						event: WindowEvent::KeyboardInput(KeyEvent {
 							key,
@@ -336,42 +405,88 @@ impl WaylandWindowImpl {
 				}
 			}
 		}
-		
-		callback(Event::MainEventsCleared);
-		cf
+		events.push(Event::MainEventsCleared);
+		(cf, events)
+	}
+	pub fn take_pending_configure(&mut self) -> bool {
+		std::mem::replace(&mut self.pending_configure, false)
+	}
+	pub fn set_pending_configure(&mut self) {
+		self.pending_configure = true
 	}
 	
 	
-	
-	/// Decoration layout — for the renderer to draw CSD geometry.
+	/// Rebuilds layout from swapchain extent. Invariant: layout.size() == swap_extent.
+	pub fn rebuild_decoration_layout(&mut self, width: u32, height: u32) {
+		self.dec_layout = DecorationLayout::new(width, height, self.is_maximized, self.is_fullscreen);
+		self.inner.set_window_geometry_full(width, height);
+	}
+
 	pub fn decoration_layout(&self) -> &DecorationLayout {
 		&self.dec_layout
 	}
 	
-	/// Decoration state — for the renderer to draw button visuals.
 	pub fn decoration_state(&self) -> &DecorationState {
 		&self.dec_state
 	}
 	
-	/// Raw `wl_surface` pointer — required by Vulkan for surface creation.
-	///
-	/// # Safety
-	///
-	/// The pointer is valid only while this [`WaylandWindowImpl`] is alive.
-	/// The caller must not store it beyond that lifetime.
+	pub fn set_theme(&mut self, theme: CsdTheme) {
+		self.csd_theme = theme;
+	}
+	
+	pub fn theme(&self) -> &CsdTheme {
+		&self.csd_theme
+	}
+	
+	pub fn sync_extent(&mut self, extent: Extent2D) {
+		self.last_extent = extent;
+	}
+	/// Valid only while self is alive.
 	#[inline]
 	pub fn wl_surface(&self) -> *mut std::ffi::c_void {
 		self.inner.surface.ptr as *mut std::ffi::c_void
 	}
 	
-	/// Raw `wl_display` pointer — required by Vulkan for surface creation.
-	///
-	/// # Safety
-	///
-	/// Same constraints as [`wl_surface`](Self::wl_surface).
+	/// Valid only while self is alive.
 	#[inline]
 	pub fn wl_display(&self) -> *mut std::ffi::c_void {
 		self.inner.display.as_ptr() as *mut std::ffi::c_void
+	}
+	
+	pub fn is_maximized(&self) -> bool { self.is_maximized }
+	pub fn is_fullscreen(&self) -> bool { self.is_fullscreen }
+	pub fn min_surface_width(&self) -> u32 { DecorationLayout::min_width() }
+	pub fn min_surface_height(&self) -> u32 { DecorationLayout::min_height() }
+	
+	
+	#[inline]
+	pub fn config(&self) -> &WindowConfig {
+		&self.config
+	}
+	
+	#[inline]
+	pub fn title(&self) -> &str {
+		&self.config.title
+	}
+	
+	#[inline]
+	pub fn width(&self) -> u32 {
+		self.config.width
+	}
+	
+	#[inline]
+	pub fn height(&self) -> u32 {
+		self.config.height
+	}
+	
+	#[inline]
+	pub fn resizable(&self) -> bool {
+		self.config.resizable
+	}
+	
+	#[inline]
+	pub fn visible(&self) -> bool {
+		self.config.visible
 	}
 }
 
@@ -383,14 +498,14 @@ impl Window for WaylandWindowImpl {
 	
 	#[inline]
 	fn extent(&self) -> Extent2D {
-		let (w, h) = self.inner.size();
-		Extent2D::new(w, h)
+		self.last_extent
 	}
 	
 	#[inline]
 	fn request_redraw(&self) {
 		// Engine renders every frame — no-op.
 	}
+	
 }
 
 
@@ -430,12 +545,6 @@ fn scancode_to_keycode(sc: u32) -> KeyCode {
 	}
 }
 
-
-impl WaylandHandles for WaylandWindowImpl {
-	fn wl_display(&self) -> *mut std::ffi::c_void { self.wl_display() }
-	fn wl_surface(&self) -> *mut std::ffi::c_void { self.wl_surface() }
-}
-
 impl VulkanWindow for WaylandWindowImpl {
 	fn required_vulkan_extensions() -> &'static [*const i8] {
 		Surface::REQUIRED_EXTENSIONS_WAYLAND
@@ -446,13 +555,12 @@ impl VulkanWindow for WaylandWindowImpl {
 		entry: &VulkanEntry,
 		instance: Arc<VulkanInstance>,
 	) -> Result<Surface, <VulkanBackend as Backend>::Error> {
-		Surface::from_wayland_window(entry, instance, self)
+		Surface::from_wayland_window(entry, instance, self.inner.native())
 	}
 	
 }
 
-/// Extends `Window` with Vulkan surface creation capability.
-/// Core never sees this. Infra uses it for `VulkanContext::new`.
+/// Vulkan surface creation. Infra-only — core never sees this.
 pub trait VulkanWindow: Window {
 	fn required_vulkan_extensions() -> &'static [*const i8];
 	fn create_surface(

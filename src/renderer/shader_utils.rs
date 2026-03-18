@@ -1,4 +1,8 @@
+use std::fmt::Debug;
+use glex_shader_macro::vertex_input;
 use crate::renderer::prelude::*;
+
+
 pub fn build_graphics_pipeline<B: Backend>(
 	pipelines: &mut PipelineManager<B>,
 	device: &B::Device,
@@ -11,7 +15,7 @@ pub fn build_graphics_pipeline<B: Backend>(
 	color_format: Format,
 ) -> Result<PipelineId, B::Error>
 	where
-		B::Device: DeviceOps<B>,
+		B::Device: DeviceOps<B>, <B as Backend>::Pipeline: Debug
 {
 	let vert = device.create_shader_module(vert_spv)?;
 	let frag = device.create_shader_module(frag_spv)?;
@@ -29,7 +33,7 @@ pub fn build_graphics_pipeline<B: Backend>(
 			shaders,
 			layout,
 			vertex,
-			raster: RasterConfig::no_cull(),
+			raster: RasterConfig::default(),
 			depth: DepthConfig::disabled(),
 			blend,
 			target: RenderTargetConfig { color_format },
@@ -41,22 +45,40 @@ pub fn build_graphics_pipeline<B: Backend>(
 	
 	Ok(pipelines.push(slot))
 }
+
+
+pub fn build_compute_pipeline<B: Backend>(
+	pipelines: &mut PipelineManager<B>,
+	device: &B::Device,
+	comp_spv: &[u8],
+	desc_layouts: &[B::DescriptorSetLayout],
+	push_ranges: &[PushConstantRange],
+) -> Result<PipelineId, B::Error>
+	where
+		B::Device: DeviceOps<B>, <B as Backend>::Pipeline: Debug
+{
+	let comp_module = device.create_shader_module(comp_spv)?;
+	let slot = pipelines.create_compute(
+		desc_layouts,
+		push_ranges,
+		comp_module,
+	);
+	
+	// 3. Clean up the module (it's baked into the pipeline/slot now)
+	device.destroy_shader_module(comp_module);
+	
+	// 4. Register with the manager and return the ID
+	Ok(pipelines.push(slot?))
+}
 // ── Vertex data for CSD ─────────────────────────────────────────────
 
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct Vertex2D {
-	pub pos: [f32; 2],
-	pub uv: [f32; 2],
-}
-
 pub const UNIT_QUAD: [Vertex2D; 6] = [
-	Vertex2D { pos: [0.0, 0.0], uv: [0.0, 0.0] },
-	Vertex2D { pos: [1.0, 0.0], uv: [1.0, 0.0] },
-	Vertex2D { pos: [1.0, 1.0], uv: [1.0, 1.0] },
-	Vertex2D { pos: [0.0, 0.0], uv: [0.0, 0.0] },
-	Vertex2D { pos: [1.0, 1.0], uv: [1.0, 1.0] },
-	Vertex2D { pos: [0.0, 1.0], uv: [0.0, 1.0] },
+	Vertex2D { input_position: [0.0, 0.0], input_texture: [0.0, 0.0] },
+	Vertex2D { input_position: [1.0, 0.0], input_texture: [1.0, 0.0] },
+	Vertex2D { input_position: [1.0, 1.0], input_texture: [1.0, 1.0] },
+	Vertex2D { input_position: [0.0, 0.0], input_texture: [0.0, 0.0] },
+	Vertex2D { input_position: [1.0, 1.0], input_texture: [1.0, 1.0] },
+	Vertex2D { input_position: [0.0, 1.0], input_texture: [0.0, 1.0] },
 ];
 
 vertex_layout!(
@@ -64,8 +86,16 @@ vertex_layout!(
     binding = 0,
     rate = VertexInputRate::VERTEX,
     attrs = [
-        0 => (Format::R32G32_SFLOAT, pos),
-        1 => (Format::R32G32_SFLOAT, uv),
+        0 => (Format::R32G32_SFLOAT, input_position),
+        1 => (Format::R32G32_SFLOAT, input_texture),
     ],
     topology = PrimitiveTopology::TRIANGLE_LIST
 );
+
+#[vertex_input]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Vertex2D {
+	pub input_position: [f32; 2],
+	pub input_texture: [f32; 2],
+}

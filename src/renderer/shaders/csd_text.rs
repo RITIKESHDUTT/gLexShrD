@@ -1,12 +1,17 @@
+use glex_shader_types::Vec4o1;
+use glex_shader_types::Vec2o0;
+use glex_shader_types::Vec4o0;
+use glex_shader_types::Vec4i1;
+use glex_shader_types::Vec2i0;
 use crate::renderer::pipelines::TextPush;
 use crate::renderer::prelude::*;
 
-#[fragment_shader]
+#[fragment_shader(bind = GlyphAtlas)]
 fn text_frag(
-	#[binding(set = 0, binding = 0)] atlas: Sampler2D,     // descriptor
-	#[location(0)] frag_uv: Vec2,        // in location = 0
-	#[location(1)] frag_color: Vec4,     // in location = 1
-	#[location(0, out)] out_color: Vec4,      // out location = 0
+	atlas: Sampler2D,     // descriptor
+	frag_uv: Vec2i0,       // in location = 0
+	frag_color: Vec4i1,    // in location = 1
+	out_color: Vec4o0,      // out location = 0
 ) {
 	let alpha: f32 = texture(atlas, frag_uv).r;
 	
@@ -23,29 +28,29 @@ fn text_frag(
 // Push constants position the glyph in pixel coords and map UV from atlas.
 
 
-#[vertex_shader]
+#[vertex_shader(vertex = Vertex2D)]
 fn text_vert(
 	// Input: The vertex of the unit quad [0..1]
-	#[location(0, in)] in_pos: Vec2,
-	#[location(1, in)] in_uv: Vec2,
-	#[push_constant(screen_size: Vec2, glyph_pos: Vec2, glyph_size: Vec2, uv_origin: Vec2,uv_size: Vec2,color: Vec4,)] pc: &TextPush,
+	input_position: Vec2,
+	input_texture: Vec2,
+	#[push_constant] pc: &TextPush,
 	// Outputs: Values passed to the Fragment Shader
-	#[location(0, out)] mut frag_uv:    Vec2,
-	#[location(1, out)] mut frag_color: Vec4,
+	mut frag_uv: Vec2o0,
+	mut frag_color:  Vec4o1,
 	// Built-in: The final coordinate for the GPU
-	#[builtin(position)] mut position:  Vec4,
+	mut out_position: Vec4
 ) {
 	// 1. Calculate the pixel coordinate (Top-Left + Offset)
-	let pixel: Vec2 = pc.glyph_pos + (in_pos * pc.glyph_size);
+	let pixel: Vec2 = pc.glyph_pos + (input_position * pc.glyph_size);
 	
 	// 2. Map Pixels to NDC Space (-1.0 to 1.0)
 	let ndc: Vec2 = (pixel / pc.screen_size) * 2.0 - 1.0;
 	
 	// 3. Map Unit UV [0..1] to Atlas UV [origin..origin+size]
-	let uv: Vec2 = pc.uv_origin + (in_uv * pc.uv_size);
+	let uv: Vec2 = pc.uv_origin + (input_texture * pc.uv_size);
 	
 	// 4. Assign to outputs
-	position   = vec4(ndc, 0.0, 1.0);
+	out_position   = vec4(ndc, 0.0, 1.0);
 	frag_uv    = uv;
 	frag_color = pc.color;
 }

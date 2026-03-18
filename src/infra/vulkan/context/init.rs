@@ -1,4 +1,3 @@
-use crate::core::type_state_queue::sealed::QueueHandle;
 use crate::infra::platform::Surface;
 use crate::infra::platform::VulkanWindow;
 
@@ -84,38 +83,6 @@ impl VulkanContext {
 		);
 		
 		Ok(Self { entry, instance, physical, device, lanes, indices })
-	}
-	pub fn newss<W: VulkanWindow>(
-		window: &W,
-	) -> Result<(Self, Surface), ash::vk::Result> {
-		let entry = Arc::new(
-			VulkanEntry::new().map_err(|_| ash::vk::Result::ERROR_INITIALIZATION_FAILED)?
-		);
-		let instance = Arc::new(
-			VulkanInstance::with_extensions(
-				Arc::clone(&entry),
-				&W::required_vulkan_extensions(),
-			)?
-		);
-		
-		let surface   = window.create_surface(&entry, Arc::clone(&instance))?;
-		let physical  = PhysicalDevice::pick(&instance);
-		let discovery = QueueDiscovery::find_queue(&instance, &physical, Some(&surface));
-		
-		let (device, lanes) = LogicalDevice::with_extensions(
-			&instance,
-			&physical,
-			&discovery,
-			&Swapchain::required_device_extensions(),
-		)?;
-		
-		let tmp = device.create_buffer(4, BufferUsage::TRANSFER_SRC)?;
-		let req = device.get_buffer_memory_requirements(tmp);
-		device.destroy_buffer(tmp);
-		
-		let indices = MemoryIndices::find(&physical, &instance, req);
-		
-		Ok((Self { entry, instance, physical, device, lanes, indices }, surface))
 	}
 	
 	/// Convenience — exposes the device typed to VulkanBackend.
@@ -216,43 +183,4 @@ impl VulkanContext {
 	pub(crate) fn instance(&self)  -> &VulkanInstance {&self.instance }
 	pub(crate) fn instance_arc(&self) -> Arc<VulkanInstance> { Arc::clone(&self.instance) }
 	pub(crate) fn queues(&self) -> &QueueLane { &self.lanes }
-	pub fn present(
-		&self,
-		swapchain: &Swapchain,
-		image_index: u32,
-		wait_semaphore: <VulkanBackend as Backend>::Semaphore,
-	) -> Result<bool, <VulkanBackend as Backend>::Error> {
-		let queue = self.lanes.present()
-						.expect("No present-capable queue")
-						.raw();
-		swapchain.present_raw(queue, image_index, wait_semaphore)
-	}
-	
 }
-
-
-//  Ownership:
-//   caller owns:  window, ctx, presentation, gpu, rendering, csd
-//                  │
-//   ctx            │ ← root, never borrowed mutably during frame loop
-//                  │
-//   presentation ──┤ ← borrows &'dev ctx at construction, then self-contained
-//                  │
-//   gpu ───────────┤ ← borrows &'dev ctx at construction, &mut during frame
-//                  │
-//   rendering ─────┤ ← borrows &'dev gpu at construction
-//                  │
-//   csd ───────────┘ ← borrows &'dev ctx at construction
-//
-//   Split borrow rule:
-//   - &ctx + &mut gpu — works, separate variables
-//   - &ctx + &presentation — works, both shared
-//   - &mut gpu + &presentation — works, separate variables
-//   - Never &mut ctx — it's always shared after construction
-//
-//   Drop order (reverse of declaration):
-//   csd          → destroys buffers, images, descriptors
-//   rendering    → destroys pipelines, layouts
-//   gpu          → destroys sync, executor, command pools
-//   presentation → destroys swapchain, surface
-//   ctx          → destroys device, instance, entry

@@ -1,14 +1,8 @@
+use glex_platform::WaylandNative;
 use crate::infra::vulkan::VulkanEntry;
 use crate::infra::vulkan::VulkanInstance;
 use ash::vk;
-use glex_platform::WaylandWindow;
 use std::sync::Arc;
-
-pub trait WaylandHandles {
-	fn wl_display(&self) -> *mut std::ffi::c_void;
-	fn wl_surface(&self) -> *mut std::ffi::c_void;
-}
-
 /// Wraps a VkSurfaceKHR. Owns the surface handle and its extension loader.
 pub struct Surface {
 	surface: vk::SurfaceKHR,
@@ -148,11 +142,11 @@ impl Surface {
 	/// # Safety
 	/// `display` must be a valid `*mut wl_display`
 	/// `surface` must be a valid `*mut wl_surface`
+	
 	pub unsafe fn from_wayland(
 		entry: &VulkanEntry,
 		instance: Arc<VulkanInstance>,
-		display: *mut std::ffi::c_void,
-		surface: *mut std::ffi::c_void,
+		native: WaylandNative,
 	) -> Result<Self, vk::Result> {
 		unsafe {
 			let wayland_loader = ash::khr::wayland_surface::Instance::new(
@@ -161,8 +155,8 @@ impl Surface {
 			);
 			
 			let create_info = vk::WaylandSurfaceCreateInfoKHR::default()
-				.display(display as *mut _)
-				.surface(surface as *mut _);
+				.display(native.display as *mut _)
+				.surface(native.surface as *mut _);
 			
 			let surface = wayland_loader.create_wayland_surface(&create_info, None)?;
 			
@@ -171,16 +165,15 @@ impl Surface {
 				instance.instance(),
 			);
 			
-			Ok(Self { surface, loader, _instance:instance})
+			Ok(Self { surface, loader, _instance: instance })
 		}
 	}
 	pub fn from_wayland_window(
 		entry: &VulkanEntry,
 		instance: Arc<VulkanInstance>,
-		window: &impl WaylandHandles,
+		native: WaylandNative,
 	) -> Result<Self, vk::Result> {
-		// Safety: trait implementor guarantees valid pointers
-		unsafe { Self::from_wayland(entry, instance, window.wl_display(), window.wl_surface()) }
+		 unsafe { Self::from_wayland(entry, instance, native) }
 	}
 	
 	
