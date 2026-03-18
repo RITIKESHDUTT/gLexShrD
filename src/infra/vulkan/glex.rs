@@ -20,6 +20,7 @@ use crate::renderer::CsdPipelines;
 use crate::renderer::CsdResources;
 use crate::renderer::TextSet;
 use super::context::{GpuContext, Presentation, Rendering, VulkanContext};
+use super::VulkanDevice;
 
 pub trait Pass<'dev> {
 	fn update(&mut self, _frame_index: u32) {}
@@ -69,8 +70,8 @@ pub struct Glex<'dev> {
 	csd_resources: CsdResources<'dev>,
 	csd_pipelines: CsdPipelines,
 	rendering: Rendering<'dev, TextSet>,
-	pub gpu: GpuContext<'dev, VulkanBackend>,
-	pub presentation: Presentation<'dev>,
+	gpu: GpuContext<'dev, VulkanBackend>,
+	presentation: Presentation<'dev>,
 	atlas_set_id: DescriptorSetId,
 	pending_image_index: Option<u32>,
 	passes: Vec<Box<dyn Pass<'dev> + 'dev>>,
@@ -244,7 +245,7 @@ impl<'dev> Glex<'dev> {
 		let extent= self.presentation.extent();
 		let render = self.presentation.render_semaphore(image_index);
 		let image  = self.presentation.image(image_index);
-		let ps = self.gpu.sync.present_sync(render);
+		let ps = self.gpu.present_sync(render);
 		let swap_img = SwapchainImage::from_raw(ctx.device(), image, extent.into());
 		
 		let clear = if is_fullscreen { theme.window_bg } else { Color::TRANSPARENT };
@@ -319,5 +320,17 @@ impl<'dev> Glex<'dev> {
 	
 	pub fn format(&self) -> <VulkanBackend as crate::core::Backend>::Format {
 		self.rendering.format()
+	}
+
+	pub fn device(&self) -> &VulkanDevice {
+		self.gpu.device()
+	}
+
+	pub fn gpu_mut(&mut self) -> &mut GpuContext<'dev, VulkanBackend> {
+		&mut self.gpu
+	}
+
+	pub fn register_descriptor_set(&mut self, handle: <VulkanBackend as crate::core::Backend>::DescriptorSet) -> DescriptorSetId {
+		self.gpu.executor_mut().register_descriptor_set(handle)
 	}
 }

@@ -29,5 +29,5 @@ pub fn empty_window() {
 			glex.end_frame(&ctx, &mut window, graph).expect("Failed");
 		};
 	}
-	glex.gpu.device().wait_idle().ok();
+	glex.device().wait_idle().ok();
 }
