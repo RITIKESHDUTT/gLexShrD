@@ -36,7 +36,6 @@ pub struct Executor<'dev, B: Backend> {
 	graphics: Option<WorkLane<'dev, Queue<Graphics, B>, B>>,
 	compute: Option<WorkLane<'dev, Queue<Compute, B>, B>>,
 	transfer: Option<WorkLane<'dev, Queue<Transfer, B>, B>>,
-	//present_sync: Option<PresentSync<B>>,
 	descriptor_sets: Vec<B::DescriptorSet>,
 }
 
@@ -193,7 +192,6 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 			graphics:       None,
 			compute:        None,
 			transfer:       None,
-			//present_sync:   None,
 			descriptor_sets: Vec::new(),
 		}
 	}
@@ -251,10 +249,6 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 			PassDomain::Transfer => self.transfer_lane().family(),
 		}
 	}
-	
-	// pub fn set_present_sync(&mut self, sync: PresentSync<B>) {
-	// 	self.present_sync = Some(sync);
-	// }
 	
 	pub fn graphics_timeline_handle(&self) -> B::Semaphore {
 		self.graphics_lane().timeline_handle()
