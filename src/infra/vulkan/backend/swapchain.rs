@@ -209,7 +209,6 @@ impl<'dev> Swapchain<'dev, > {
 	pub(crate) fn extent(&self) -> vk::Extent2D { self.extent }
 	pub(crate) fn image(&self, index: u32) -> vk::Image { self.images[index as usize] }
 	pub(crate) fn image_view(&self, index: u32) -> &ImageView<'_, VulkanBackend> { &self.image_views[index as usize] }
-	pub(crate) fn _image_count(&self) -> u32 { self.images.len() as u32 }
 
 	pub(crate) fn present_raw(
 		&self,
