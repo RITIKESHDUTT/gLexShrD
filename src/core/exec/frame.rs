@@ -33,12 +33,6 @@ pub struct BarrierEdge {
 	pub dst_domain: PassDomain,
 }
 
-impl BarrierEdge {
-	pub fn is_cross_queue(&self) -> bool {
-		self.src_domain != self.dst_domain
-	}
-}
-
 /// The compiled execution order from a frame graph.
 #[derive(Debug)]
 pub struct ExecutionOrder {
@@ -46,11 +40,6 @@ pub struct ExecutionOrder {
 	pub barriers: Vec<BarrierEdge>,
 }
 
-
-// ─── PassDecl ────────────────────────────────────────────────
-// Replaced: record: Option<PassRecord<'f, B>> → commands: Vec<PassCommand>
-// Removed:  'f lifetime (existed solely for closure borrows)
-// Added:    descriptor_set: Option<DescriptorSetId>
 
 pub struct PassDecl {
 	pub id: PassId,
@@ -60,20 +49,12 @@ pub struct PassDecl {
 	pub writes: Vec<(ResourceId, UsageIntent)>,
 	pub domain: PassDomain,
 	pub commands: Vec<PassCommand>,
+	pub viewport: Option<(f32, f32, f32, f32)>,  // x, y, w, h
+	pub scissor:  Option<(i32, i32, u32, u32)>,  // x, y, w, h
 }
 
 
-/// Builder for adding passes to a frame graph.
-///
-/// The pipeline field in PassBuilder is temporary storage that gets
-/// transferred into PassDecl when .submit() is called.
-///
-/// Domain safety: PassBuilder<D> gates which commands are available.
-/// PassBuilder<Graphics> has .draw(), PassBuilder<Compute> has .dispatch(),
-/// PassBuilder<Transfer> has .copy_buffer(). Calling .dispatch() on a
-/// PassBuilder<Graphics> is a compile error.
-// Removed:  'f lifetime
-// Added:    domain, descriptor_set, commands fields
+/// Domain-gated pass builder. `D` restricts available commands at compile time.
 pub struct PassBuilder<'a, D> {
 	graph: &'a mut FrameGraph,
 	id: PassId,
@@ -83,6 +64,8 @@ pub struct PassBuilder<'a, D> {
 	reads: Vec<(ResourceId, UsageIntent)>,
 	writes: Vec<(ResourceId, UsageIntent)>,
 	commands: Vec<PassCommand>,
+	viewport: Option<(f32, f32, f32, f32)>,
+	scissor:  Option<(i32, i32, u32, u32)>,
 	_domain: PhantomData<D>,
 }
 
@@ -105,9 +88,10 @@ impl<D> PassBuilder<'_, D> {
 	}
 	
 	pub fn push_constants(mut self, range: PushConstantRange, data: &[u8]) -> Self {
-		let mut buf = [0u8; 128];
-		buf[..data.len()].copy_from_slice(data);
-		self.commands.push(PassCommand::PushConstants { range, data: buf });
+		self.commands.push(PassCommand::PushConstants {
+			range,
+			data: data.into(),
+		});
 		self
 	}
 	
@@ -122,6 +106,8 @@ impl<D> PassBuilder<'_, D> {
 			writes: self.writes,
 			domain: self.domain,
 			commands: self.commands,
+			viewport: self.viewport,
+			scissor: self.scissor,
 		});
 		id
 	}
@@ -152,7 +138,6 @@ impl<D> PassBuilder<'_, D> {
 	}
 }
 // ─── Graphics impl ──────────────────────────────────────────
-// Compile-time enforced: only PassBuilder<Graphics> can call these.
 
 impl PassBuilder<'_, Graphics> {
 	pub fn bind_pipeline(mut self, id: PipelineId) -> Self {
@@ -184,10 +169,19 @@ impl PassBuilder<'_, Graphics> {
 		self.commands.push(PassCommand::BindDescriptorSet(id));
 		self
 	}
+	pub fn set_viewport(mut self, x: f32, y: f32, w: f32, h: f32) -> Self {
+		self.viewport = Some((x, y, w, h));
+		self
+	}
+	
+	pub fn set_scissor(mut self, x: i32, y: i32, w: u32, h: u32) -> Self {
+		self.scissor = Some((x, y, w, h));
+		self
+	}
+
 }
 
 // ─── Compute impl ───────────────────────────────────────────
-// Compile-time enforced: only PassBuilder<Compute> can call these.
 
 impl PassBuilder<'_, Compute> {
 	pub fn bind_pipeline(mut self, id: PipelineId) -> Self {
@@ -207,7 +201,6 @@ impl PassBuilder<'_, Compute> {
 }
 
 // ─── Transfer impl ──────────────────────────────────────────
-// Compile-time enforced: only PassBuilder<Transfer> can call these.
 
 impl PassBuilder<'_, Transfer> {
 	pub fn copy_buffer(mut self, src: ResourceId, dst: ResourceId, size: u64, dst_offset: u64) -> Self {
@@ -216,10 +209,7 @@ impl PassBuilder<'_, Transfer> {
 	}
 }
 
-/// Declarative frame graph. Resources and passes are declared,
-/// then compiled into an execution order with automatic barrier placement.
-// Removed: 'f lifetime
-// Added:   descriptor_sets registry
+/// Declarative frame graph. Compiles into execution order with automatic barriers.
 pub struct FrameGraph {
 	resources: Vec<ResourceDecl>,
 	passes: Vec<PassDecl>,
@@ -250,8 +240,6 @@ impl FrameGraph {
 		self.resources.iter().find(|r| r.id == id).expect("resource not found")
 	}
 	
-	// Changed: returns PassBuilder<'_, Graphics, B> (no 'f)
-	// Added:   domain, descriptor_set, commands fields in builder
 	pub fn add_graphics_pass(&mut self, pipeline: Option<PipelineId>) -> PassBuilder<'_, Graphics> {
 		let id = self.next_pass_id;
 		self.next_pass_id += 1;
@@ -264,6 +252,8 @@ impl FrameGraph {
 			reads: Vec::new(),
 			writes: Vec::new(),
 			commands: Vec::new(),
+			scissor:None,
+			viewport:None,
 			_domain: PhantomData,
 		}
 	}
@@ -280,6 +270,8 @@ impl FrameGraph {
 			reads: Vec::new(),
 			writes: Vec::new(),
 			commands: Vec::new(),
+			scissor:None,
+			viewport:None,
 			_domain: PhantomData,
 		}
 	}
@@ -296,6 +288,8 @@ impl FrameGraph {
 			reads: Vec::new(),
 			writes: Vec::new(),
 			commands: Vec::new(),
+			scissor:None,
+			viewport:None,
 			_domain: PhantomData,
 		}
 	}
@@ -455,28 +449,18 @@ impl Default for FrameGraph{
 	}
 }
 
-/*
-NOTE:
-Builder: 'a lifetime ties to mutable borrow of FrameGraph for construction.
-PassDecl: commands are plain data — no closures, no lifetime constraints.
-Executor: borrows CompiledGraph and replays PassCommands on command buffers.
- */
+// ─── Compiled Graph ─────────────────────────────────────────
 
-//---------------------new compiled Graph ----------------------
-
-// Removed:  'f lifetime, record: PassRecord
-// Replaced: commands: Vec<PassCommand>
-// Changed:  descriptor_set: Option<DescriptorSetId> (opaque id, not raw handle)
 pub struct CompiledPass {
 	pub id: PassId,
 	pub pipeline: Option<PipelineId>,
 	pub descriptor_set: Option<DescriptorSetId>,
 	pub domain: PassDomain,
 	pub commands: Vec<PassCommand>,
+	pub viewport:       Option<(f32, f32, f32, f32)>,
+	pub scissor:        Option<(i32, i32, u32, u32)>,
 }
 
-// Removed: 'f lifetime
-// Added:   descriptor_sets: Vec<B::DescriptorSet> (registry carried from FrameGraph)
 pub struct CompiledGraph {
 	pub order: ExecutionOrder,
 	pub passes: Vec<CompiledPass>,
@@ -485,21 +469,9 @@ pub struct CompiledGraph {
 
 impl  FrameGraph {
 	
-	/// Full compilation step.
-	///
-	/// Consumes the FrameGraph (IR) and produces an executable graph.
-	///
-	/// Phase 1: dependency + barrier analysis
-	/// Phase 2: lowering PassDecl → CompiledPass
+	/// Consumes the graph IR: dependency analysis → barrier placement → lowering.
 	pub fn compile(self) -> Result<CompiledGraph, GraphError> {
-		// ─────────────────────────────────────────────
-		// Phase 1: dependency compilation
-		// ─────────────────────────────────────────────
 		let order = self.compile_dependencies()?;
-		
-		// ─────────────────────────────────────────────
-		// Phase 2: lowering — just moves, no .take()
-		// ─────────────────────────────────────────────
 		let compiled_passes = self.passes.into_iter().map(|decl| {
 			CompiledPass {
 				id: decl.id,
@@ -507,6 +479,8 @@ impl  FrameGraph {
 				descriptor_set: decl.descriptor_set,
 				domain: decl.domain,
 				commands: decl.commands,
+				viewport: decl.viewport,
+				scissor: decl.scissor,
 			}
 		}).collect();
 		

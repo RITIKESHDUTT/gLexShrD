@@ -1,8 +1,9 @@
+use crate::core::PresentSync;
 use crate::core::type_state_queue::{Graphics, Queue, Transfer};
 use crate::core::Backend;
 use crate::core::FrameSync;
 use crate::core::WorkLane;
-use crate::core::{Executor, PresentSync};
+use crate::core::{Executor};
 use crate::infra::vulkan::backend::{VulkanBackend, VulkanDevice};
 use crate::infra::vulkan::context::init::VulkanContext;
 
@@ -15,7 +16,7 @@ impl<'dev,> GpuContext<'dev, VulkanBackend> {
 	pub fn new(ctx: &'dev VulkanContext) -> Result<Self, <VulkanBackend as Backend>::Error> {
 		let mut executor = Executor::new(ctx.device());
 		
-		// assertion/belief  that it should not be unreachable, but if it does, then PANIC!!!
+		// Graphics queue is mandatory.
 		executor.attach_graphics(*ctx.lanes.graphics()).unwrap_or_else(|_e| unreachable!());
 		
 		if let Some(&cq) = ctx.lanes.compute() {
@@ -62,14 +63,10 @@ impl<'dev,> GpuContext<'dev, VulkanBackend> {
 		self.sync.acquire_semaphore().handle()
 	}
 	
-	pub fn render_semaphore(&self) -> <VulkanBackend as Backend>::Semaphore {
-		self.sync.render_semaphore()
+	pub fn present_sync(&self, render_finished: <VulkanBackend as Backend>::Semaphore) -> PresentSync<VulkanBackend> {
+		self.sync.present_sync(render_finished)
 	}
 	// ── Executor delegates ────────────────────────────────────────────────────
-	
-	pub fn set_present_sync(&mut self, ps: PresentSync<VulkanBackend>) {
-		self.executor.set_present_sync(ps);
-	}
 	
 	pub fn executor(&self) -> &Executor<'dev, VulkanBackend> {
 		&self.executor
@@ -111,9 +108,16 @@ impl<'dev,> GpuContext<'dev, VulkanBackend> {
 		}
 	}
 	
+	pub fn last_graphics_signal(&self) -> u64 {
+		self.executor.graphics_lane().last_signal_value()
+	}
+
 	pub fn bump_after_present(&mut self) -> Result<u64, <VulkanBackend as Backend>::Error> {
 		let device = self.executor.device();
 		self.executor.graphics_lane_mut().bump_timeline(device)
+	}
+	pub fn drain_for_configure(&mut self) -> Result<(), <VulkanBackend as Backend>::Error>{
+		self.executor.device().wait_idle()
 	}
 }
 

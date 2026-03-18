@@ -1,6 +1,6 @@
 use super::state;
 use crate::core::backend::{Backend, BufferBarrierInfo2, CommandOps, ImageBarrierInfo};
-use crate::core::types::{CommandBufferUsageFlags, Rect2D, Viewport};
+use crate::core::types::{CommandBufferUsageFlags};
 use std::marker::PhantomData;
 
 pub struct CommandBuffer<'dev, S, B: Backend, R = state::Outside> {
@@ -11,7 +11,6 @@ pub struct CommandBuffer<'dev, S, B: Backend, R = state::Outside> {
 	pub(crate) _render: PhantomData<R>,
 }
 
-// Handle access: available in any state, any render scope
 impl<S, R, B: Backend> CommandBuffer<'_, S, B, R> {
 	pub fn handle(&self) -> B::CommandBuffer {
 		self.buffer
@@ -59,18 +58,5 @@ impl<'dev, B: Backend> CommandBuffer<'dev, state::Recording, B> {
 			_state: PhantomData,
 			_render: PhantomData,
 		})
-	}
-}
-
-// ─────────────────────────────────────────────────────────────
-// Dynamic State (Recording, any render scope)
-// ─────────────────────────────────────────────────────────────
-impl<'dev, R, B: Backend> CommandBuffer<'dev, state::Recording, B, R> {
-	pub fn set_viewport_rect(&self, viewport: Viewport) {
-		self.device.cmd_set_viewport(self.buffer, viewport);
-	}
-	
-	pub fn set_scissor_rect(&self, rect: Rect2D) {
-		self.device.cmd_set_scissor(self.buffer, rect);
 	}
 }

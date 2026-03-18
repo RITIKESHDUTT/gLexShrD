@@ -174,6 +174,10 @@ pub struct SemaphoreSubmit<B: Backend> {
 	pub value: u64,
 	pub stage: Stage,
 }
+impl<B: Backend> Copy for SemaphoreSubmit<B> {}
+impl<B: Backend> Clone for SemaphoreSubmit<B> {
+	fn clone(&self) -> Self { *self }
+}
 
 pub struct ColorAttachment<B: Backend> {
 	pub view: B::ImageView,

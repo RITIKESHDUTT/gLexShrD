@@ -20,7 +20,7 @@ ash = { version = "0.38.0", default-features = false, features = ["std", "loaded
 thiserror = "2.0.18"
 crossbeam-queue = "0.3"
 bitflags = "2.11.0"
-
+arrayvec = "0.7.6"
 
 [dependencies]
 thiserror = "2.0.18"
@@ -30,6 +30,7 @@ glex-shader-macro = { path = "glex-shader-macro" }
 glex-shader-types = { path = "glex-shader-types" }
 glex-platform = { path = "glex-platform" }
 bitflags = "2.11.0"
+arrayvec = "0.7.6"
 
 
 [profile.dev]

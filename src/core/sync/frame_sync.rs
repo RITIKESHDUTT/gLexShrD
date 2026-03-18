@@ -1,3 +1,4 @@
+use crate::core::PresentSync;
 use super::BinarySemaphore;
 use crate::core::backend::{Backend, DeviceOps};
 
@@ -92,8 +93,13 @@ impl<'dev, const N: usize, B: Backend> FrameSync<'dev, N, B> {
 	pub fn frame(&self) -> u64 {
 		self.frame
 	}
-
 	
+	pub fn present_sync(&self, render_finished: B::Semaphore) -> PresentSync<B> {
+		PresentSync {
+			wait_acquire: self.acquire_semaphores[self.current].handle(),
+			signal_render_finished: render_finished,
+		}
+	}
 	/// Returns the current slot index (frame % N).
 	pub fn current_slot(&self) -> usize {
 		self.current

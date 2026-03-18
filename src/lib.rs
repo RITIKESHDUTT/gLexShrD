@@ -1,3 +1,4 @@
+
 mod infra;
 mod core;
 mod domain;
@@ -7,4 +8,4 @@ mod lin_al;
 mod renderer;
 
 // ── Public API (Currently only Glex) ───────────────────────────────────
-pub use infra::Glex;
+pub use infra::{Glex, VulkanContext, WaylandPlatform, WaylandWindowImpl};

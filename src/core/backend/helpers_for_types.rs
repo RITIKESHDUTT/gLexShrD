@@ -93,9 +93,11 @@ macro_rules! binding {
     (
         $name:ident,
         index = $index:expr,
+        set   = $set:expr,
         type  = $ty:expr,
         stages = $stages:expr
     ) => {
+        #[shader_binding(index = $index, set = $set)]
         pub struct $name;
 
         impl Binding for $name {

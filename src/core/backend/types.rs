@@ -22,7 +22,7 @@ pub struct Offset2D {
 	y: i32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Format(pub i32);
 
 impl Format {
@@ -246,21 +246,40 @@ pub struct VertexAttributeDesc {
 // ── Bitflags (u64 — modern Vulkan) ──────────────────────────
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ShaderStages(pub u64);
+pub struct ShaderStages(pub u32);
 
 impl ShaderStages {
-	pub const VERTEX: Self = Self(1);
-	pub const FRAGMENT: Self = Self(2);
-	pub const COMPUTE: Self = Self(4);
-	pub const ALL_GRAPHICS: Self = Self(1 | 2);
-	pub const ALL: Self = Self(1 | 2 | 4);
+	
+	pub const VERTEX: Self = Self(0x00000001);
+	
+	pub const TESSELLATION_CONTROL: Self = Self(0x00000002);
+	
+	pub const TESSELLATION_EVALUATION: Self = Self(0x00000004);
+	
+	pub const GEOMETRY: Self = Self(0x00000008);
+	
+	pub const FRAGMENT: Self = Self(0x00000010);
+	
+	pub const COMPUTE: Self = Self(0x00000020);
+	
+	pub const ALL_GRAPHICS: Self = Self(
+		Self::VERTEX.0 |
+			Self::TESSELLATION_CONTROL.0 |
+			Self::TESSELLATION_EVALUATION.0 |
+			Self::GEOMETRY.0 |
+			Self::FRAGMENT.0
+	);
+	
+	pub const ALL: Self = Self(Self::ALL_GRAPHICS.0 | Self::COMPUTE.0);
 }
 
-impl BitOr for ShaderStages {
+impl std::ops::BitOr for ShaderStages {
 	type Output = Self;
-	fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+	
+	fn bitor(self, rhs: Self) -> Self {
+		Self(self.0 | rhs.0)
+	}
 }
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct BufferUsage(pub u64);
 
@@ -370,12 +389,10 @@ pub struct Rect2D {
 }
 
 impl Offset2D {
-	// Constructor
 	pub fn new(x: i32, y: i32) -> Self {
 		Self { x, y }
 	}
 	
-	// Getters
 	pub fn x(&self) -> i32 {
 		self.x
 	}
@@ -384,7 +401,6 @@ impl Offset2D {
 		self.y
 	}
 	
-	// Setters
 	pub fn set_x(&mut self, x: i32) {
 		self.x = x;
 	}
@@ -393,7 +409,6 @@ impl Offset2D {
 		self.y = y;
 	}
 	
-	// Utility
 	pub fn translate(&mut self, dx: i32, dy: i32) {
 		self.x += dx;
 		self.y += dy;
@@ -404,12 +419,10 @@ impl Offset2D {
 	}
 }
 impl Extent2D {
-	// Constructor
 	pub fn new(width: u32, height: u32) -> Self {
 		Self { width, height }
 	}
 	
-	// Getters
 	pub fn width(&self) -> u32 {
 		self.width
 	}
@@ -418,7 +431,6 @@ impl Extent2D {
 		self.height
 	}
 	
-	// Setters
 	pub fn set_width(&mut self, width: u32) {
 		self.width = width;
 	}
@@ -427,7 +439,6 @@ impl Extent2D {
 		self.height = height;
 	}
 	
-	// Utility
 	pub fn area(&self) -> u32 {
 		self.width * self.height
 	}
@@ -436,13 +447,27 @@ impl Extent2D {
 		self.width == 0 || self.height == 0
 	}
 }
+use glex_platform::platform as plat;
+use crate::core::backend::types as gpu;
+
+impl From<plat::Extent2D> for gpu::Extent2D {
+	fn from(e: plat::Extent2D) -> Self {
+		Self {
+			width: e.width(),
+			height: e.height(),
+		}
+	}
+}
+impl From<gpu::Extent2D> for plat::Extent2D {
+	fn from(e: gpu::Extent2D) -> Self {
+		Self::new(e.width, e.height)
+	}
+}
 
 impl Rect2D {
 	pub fn new(offset: Offset2D, extent: Extent2D) -> Self {
 		Self { offset, extent }
 	}
-	
-	// ---- structured access ----
 	
 	pub fn offset(&self) -> Offset2D {
 		self.offset
@@ -459,8 +484,6 @@ impl Rect2D {
 	pub fn set_extent(&mut self, extent: Extent2D) {
 		self.extent = extent;
 	}
-	
-	// ---- delegated access ----
 	
 	pub fn x(&self) -> i32 {
 		self.offset.x()
@@ -493,8 +516,6 @@ impl Rect2D {
 	pub fn set_height(&mut self, height: u32) {
 		self.extent.set_height(height);
 	}
-	
-	// ---- utility ----
 	
 	pub fn area(&self) -> u32 {
 		self.extent.area()

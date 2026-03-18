@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use crate::renderer::pipelines::{create_rect_pipeline, create_text_pipeline};
 use crate::renderer::prelude::*;
 use crate::renderer::shaders::*;
@@ -24,7 +25,7 @@ impl CsdPipelines {
 		format: Format,
 	) -> Result<Self, B::Error>
 		where
-			B::Device: DeviceOps<B>,
+			B::Device: DeviceOps<B>, <B as Backend>::Pipeline: Debug
 	{
 		let device = pipelines.device();
 		
