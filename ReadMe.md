@@ -69,6 +69,32 @@ For a peek into active development and ongoing work:
 
 ---
 
+## Codebase structure & navigation
+
+- `src/lib.rs` &mdash; public API surface exporting `Glex`, `VulkanContext`, `WaylandPlatform`, and `WaylandWindowImpl`.
+- `src/infra/` &mdash; platform and backend plumbing.
+  - `platform/` handles Wayland window integration (planned: X11/DRM backends).
+  - `vulkan/` holds the Vulkan context, memory helpers, and low-level backend bindings.
+- `src/core/` &mdash; engine internals.
+  - `cmd/` for command recording, `render/` for render graph nodes, `resource/` for resource descriptions, `backend/` for abstraction traits, `exec/` for the frame-graph executor, and `sync/` for timeline semaphore management.
+- `src/renderer/` &mdash; higher-level rendering pieces: pipelines, shader utilities, and example shaders (e.g., `shaders/particle_vortex/`).
+- `src/engine/`, `src/runtime/`, `src/domain/`, `src/lin_al/` &mdash; scaffolding for the runtime, math utilities, and domain-specific layers (parts are intentionally stubbed while the architecture is published gradually).
+- `tests/csd_test.rs` &mdash; integration test exercising Wayland window creation and Vulkan context bootstrap through `Glex`.
+
+### Key technologies
+- Rust 2024, Vulkan 1.3 via `ash`
+- Error handling with `thiserror`; logging/diagnostics with `tracing` + `tracing-subscriber`
+- Concurrency primitives from `crossbeam-queue`, flags via `bitflags`, stack-friendly arrays via `arrayvec`
+
+### Building and testing
+- Commands (once all workspace members are present):
+  - Build: `cargo build --verbose`
+  - Tests: `cargo test --verbose` (integration test in `tests/`)
+  - Release: `cargo build --release` (LTO, single codegen unit)
+- Current status: the workspace references crates that are **not yet published** (`glex-platform`, `glex-shader-macro`, `glex-shader-types`), so fresh clones will see build/test failures until those members are added. The code is published primarily for architectural inspection.
+
+---
+
 ## Limitations & Roadmap
 
 | Current Limitation | Intended Direction |
