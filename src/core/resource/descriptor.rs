@@ -1,3 +1,5 @@
+use crate::core::ImageView;
+use crate::core::Buffer;
 use crate::renderer::ComputeStorage;
 use crate::renderer::VertexStorage;
 use crate::renderer::GfxStorage;
@@ -157,6 +159,7 @@ impl<'dev, B: Backend, Iface> DescriptorSet<'dev, desc_state::Allocated, B, Ifac
 	pub fn write_buffer<BIND: Binding>(
 		self,
 		buffer: B::Buffer,
+		offset: u64,
 		size: u64,
 	) -> Self {
 		debug_assert!(
@@ -169,7 +172,7 @@ impl<'dev, B: Backend, Iface> DescriptorSet<'dev, desc_state::Allocated, B, Ifac
 			BIND::INDEX,
 			BIND::TYPE,
 			buffer,
-			0,
+			offset,
 			size,
 		);
 		
@@ -363,35 +366,68 @@ DescriptorSet<'dev, desc_state::Updated, B, GfxStorage>
 	where
 		B::Device: DeviceOps<B>,
 {
-	pub fn vertex_storage(
+	pub fn vertex_storage<S>(
 		device: &'dev B::Device,
 		pool: &DescriptorPool<'_, B>,
 		layout: &DescriptorLayout<'dev, B, GfxStorage>,
-		buffer: B::Buffer,
-		size: u64,
+		buffer: &Buffer<'dev, S, B>,
 	) -> Result<Self, B::Error> {
 		DescriptorSet::build(device, pool, layout, |set| {
-			set.write_buffer::<VertexStorage>(buffer, size)
+			set.write_buffer::<VertexStorage>(
+				buffer.handle(),
+				buffer.offset(),
+				buffer.size()
+			)
 		})
 	}
 }
 
-impl<'dev, B: Backend>
-DescriptorSet<'dev, desc_state::Updated, B, ComputeStorage>
+impl<'dev, B: Backend> DescriptorSet<'dev, desc_state::Updated, B, ComputeStorage>
 	where
 		B::Device: DeviceOps<B>,
 {
-	pub fn storage_pair(
+	pub fn storage_pair<S1, S2>(
 		device: &'dev B::Device,
 		pool: &DescriptorPool<'_, B>,
 		layout: &DescriptorLayout<'dev, B, ComputeStorage>,
-		read: B::Buffer,
-		write: B::Buffer,
-		size: u64,
+		read:  &Buffer<'dev, S1, B>,
+		write: &Buffer<'dev, S2, B>,
 	) -> Result<Self, B::Error> {
 		DescriptorSet::build(device, pool, layout, |set| {
-			set.write_buffer::<StorageRead>(read, size)
-			   .write_buffer::<StorageWrite>(write, size)
+			// Pull the real GPU address (Handle + Offset) for both buffers
+			set.write_buffer::<StorageRead>(
+				read.handle(),
+				read.offset(),
+				read.size()
+			)
+			   .write_buffer::<StorageWrite>(
+				   write.handle(),
+				   write.offset(),
+				   write.size()
+			   )
+		})
+	}
+}
+// For every set interface that has exactly one CombinedImageSampler binding,
+// this mirrors what vertex_storage does for storage buffers:
+//   - caller passes typed wrappers
+//   - the helper calls .handle() internally
+//   - call site becomes a single line
+
+impl<'dev, B: Backend, Iface: DescriptorSetInterface>
+DescriptorSet<'dev, desc_state::Updated, B, Iface>
+	where
+		B::Device: DeviceOps<B>,
+{
+	pub fn image_sampler<BIND: Binding>(
+		device:  &'dev B::Device,
+		pool:    &DescriptorPool<'_, B>,
+		layout:  &DescriptorLayout<'dev, B, Iface>,
+		sampler: &Sampler<'_, B>,
+		view:    &ImageView<'dev, B>,
+	) -> Result<Self, B::Error> {
+		DescriptorSet::build(device, pool, layout, |set| {
+			set.write_image_sampler::<BIND>(sampler, view.handle())
 		})
 	}
 }

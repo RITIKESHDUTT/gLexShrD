@@ -9,7 +9,7 @@ use crate::core::resource::desc_state::{Bound, Updated};
 use crate::core::resource::DescriptorSet;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-
+use crate::core::Allocation;
 
 /// # Buffer Typestate System
 ///
@@ -60,48 +60,107 @@ use std::mem::ManuallyDrop;
 pub struct Buffer<'dev, S, B: Backend> {
 	device: &'dev B::Device,
 	handle: B::Buffer,
-	memory: B::DeviceMemory,
-	size: u64,
+	sub_allocator: Option<B::Allocation>,
+	logical_size: u64,
 	pub(crate) family: u32, // "Current Owner"
 	_state: PhantomData<S>,
 }
 
 impl<S, B: Backend> Buffer<'_, S, B> {
 	pub fn handle(&self) -> B::Buffer { self.handle }
-	pub fn size(&self) -> u64 { self.size }
+	pub fn size(&self) -> u64 { self.logical_size }
 	pub fn family(&self) -> u32 { self.family }
-}
-
-impl<'dev, S, B: Backend> Buffer<'dev, S, B> {
-	pub fn map<T>(&self, size: u64) -> Result<*mut T, B::Error> {
-		self.device.map_memory(self.memory, 0, size).map(|p| p as *mut T)
+	
+	/// Bridges the Buffer wrapper to the underlying Arena Allocation offset.
+	/// Without this, Descriptors and Viewports will always look at Byte 0.
+	// --- critical: descriptor offset ---
+	pub fn offset(&self) -> u64 {
+		self.sub_allocator
+			.as_ref()
+			.map(|a| a.memory_offset())
+			.unwrap_or(0)
 	}
 	
-	pub fn with_mapped<T: Copy, F, R>(&self, count: usize, f: F) -> Result<R, B::Error>
-		where F: FnOnce(&mut [T]) -> R,	{
-			let size = (count * std::mem::size_of::<T>()) as u64;
-			let ptr = self.device.map_memory(self.memory, 0, size)?;
-			let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut T, count) };
-			let result = f(slice);
-			self.device.unmap_memory(self.memory);
+	// --- critical: descriptor range ---
+	pub fn range(&self) -> u64 {
+		self.sub_allocator
+			.as_ref()
+			.map(|a| a.size())
+			.unwrap_or(self.logical_size)
+	}
+	
+	// --- critical: memory handle (for debugging / binding validation) ---
+	pub fn memory(&self) -> Option<B::DeviceMemory> {
+		self.sub_allocator
+			.as_ref()
+			.map(|a| a.memory())
+	}
+}
+
+
+// CHANGE: added `where` bound so sub.memory() resolves to B::DeviceMemory,
+// which is what map_memory / unmap_memory expect.
+impl<'dev, S, B: Backend> Buffer<'dev, S, B>
+	where B::Allocation: Allocation<Memory = B::DeviceMemory>
+{
+	pub fn map<T>(&self, size: u64) -> Result<*mut T, B::Error> {
+		let sub = self.sub_allocator.as_ref().expect("REASON");
+		// CHANGE: was self.memory — now routed through the sub-allocation.
+		self.device
+			.map_memory(sub.memory(), sub.memory_offset(), size)
+			.map(|p| p as *mut T)
+	}
+	
+	pub fn with_mapped<T: Copy, F, R>(&self, count: usize, f: F) -> Result<R, B::Error> where
+		F: FnOnce(&mut [T]) -> R,
+	{
+		let size = (count * std::mem::size_of::<T>()) as u64;
+		let sub  = self.sub_allocator.as_ref().expect("with_mapped called on non-owning buffer");
+		
+		let ptr = self.device.map_memory(sub.memory(), sub.memory_offset(), size)?;
+		let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut T, count) };
+		
+		let result = f(slice);
+		
+		self.device.unmap_memory(sub.memory());
+		
 		Ok(result)
 	}
 }
+impl<'dev, S, B: Backend> Buffer<'dev, S, B>
+	where B::Allocation: Allocation<Memory = B::DeviceMemory>
+{
+	pub fn finalize_lifetime(&mut self, t: u64) {
+		if let Some(sub) = self.sub_allocator.as_mut() {
+			sub.finalize_lifetime(t);
+		}
+	}
+}
 
-
-impl<'dev, B: Backend> Buffer<'dev, buf_state::Undefined, B> {
+// CHANGE: `allocate` no longer calls allocate_memory internally.
+// The caller (GpuContext) already holds a SubAllocation from the arena;
+// it passes it in here and Buffer binds the VkBuffer to it.
+// Old signature: (device, size, usage, memory_type_index, family)
+// New signature: (device, sub, usage, family)
+impl<'dev, B: Backend> Buffer<'dev, buf_state::Undefined, B>
+	where B::Allocation: Allocation<Memory = B::DeviceMemory, Buffer = B::Buffer>,
+{
 	pub fn allocate(
 		device: &'dev B::Device,
-		size: u64,
-		usage: BufferUsage,
-		memory_type_index: u32,
+		logical_size: u64,
+		sub_allocator: B::Allocation,
 		family: u32,
 	) -> Result<Self, B::Error> {
-		let handle = device.create_buffer(size, usage)?;
-		let mem_req = device.get_buffer_memory_requirements(handle);
-		let memory = device.allocate_memory(mem_req.size, memory_type_index)?;
-		device.bind_buffer_memory(handle, memory, 0)?;
-		Ok(Self { device, handle, memory, size, family, _state: PhantomData })
+		let handle = sub_allocator.buffer();
+		
+		Ok(Self {
+			device,
+			handle,
+			sub_allocator: Some(sub_allocator),
+			logical_size,
+			family,
+			_state: PhantomData,
+		})
 	}
 }
 
@@ -110,7 +169,9 @@ impl<'dev, B: Backend> Buffer<'dev, buf_state::Undefined, B> {
 // Buffer state transitions (barriers happen outside render pass)
 // ─────────────────────────────────────────────────────────────
 
-impl<'dev, B: Backend> Buffer<'dev, buf_state::Undefined, B> {
+impl<'dev, B: Backend> Buffer<'dev, buf_state::Undefined, B>
+	where B::Allocation: Allocation<Memory = B::DeviceMemory>
+{
 	pub fn into_transfer_dst(
 		mut self,
 		cmd: &CommandBuffer<'_, Recording, B>,
@@ -192,12 +253,16 @@ fn barrier<S, R, B: Backend>(
 }
 
 fn retype<'dev, Old, New, B: Backend>(b: Buffer<'dev, Old, B>) -> Buffer<'dev, New, B> {
-	let b = ManuallyDrop::new(b);
+	let mut b = ManuallyDrop::new(b);
 	Buffer {
 		device: b.device,
 		handle: b.handle,
-		memory: b.memory,
-		size: b.size,
+		// across the typestate transition. ManuallyDrop prevents double-drop.
+		// take() moves the Option out and leaves None in its place.
+		// ManuallyDrop ensures the original Buffer destructor never fires,
+		// so the None left behind is never dropped either.
+		sub_allocator: std::mem::take(&mut b.sub_allocator),
+		logical_size: b.logical_size,
 		family: b.family,
 		_state: PhantomData,
 	}
@@ -214,16 +279,37 @@ impl<B: Backend> CommandBuffer<'_, Recording, B> {
 		dst: &Buffer<'_, buf_state::TransferDst, B>,
 		size: u64,
 	) {
-		self.device.cmd_copy_buffer(self.buffer, src.handle(), dst.handle(), 0, 0, size);
+		let src_base = src.offset();
+		let dst_base = dst.offset();
+		
+		self.device.cmd_copy_buffer(
+			self.buffer,
+			src.handle(),
+			dst.handle(),
+			src_base,
+			dst_base,
+			size,
+		);
 	}
 	
 	pub fn copy_buffer_to_image(
 		&self,
 		src: &Buffer<'_, buf_state::TransferSrc, B>,
+		src_offset: u64,
 		dst: &Image<'_, TransferDst, B>,
 	) {
 		let ext = dst.extent();
-		self.device.cmd_copy_buffer_to_image(self.buffer, src.handle(), dst.handle(), ext);
+		
+		debug_assert!(src_offset < src.size());
+		let src_base = src.offset();
+		
+		self.device.cmd_copy_buffer_to_image(
+			self.buffer,
+			src.handle(),
+			src_base + src_offset,
+			dst.handle(),
+			ext,
+		);
 	}
 	
 	pub fn copy_buffer_offset(
@@ -234,7 +320,19 @@ impl<B: Backend> CommandBuffer<'_, Recording, B> {
 		src_offset: u64,
 		dst_offset: u64,
 	) {
-		self.device.cmd_copy_buffer(self.buffer, src.handle(), dst.handle(), src_offset, dst_offset, size);
+		debug_assert!(src_offset + size <= src.size());
+		debug_assert!(dst_offset + size <= dst.size());
+		let src_base = src.offset();
+		let dst_base = dst.offset();
+		
+		self.device.cmd_copy_buffer(
+			self.buffer,
+			src.handle(),
+			dst.handle(),
+			src_base + src_offset,
+			dst_base + dst_offset,
+			size,
+		);
 	}
 }
 
@@ -301,16 +399,6 @@ impl<B: Backend> CommandBuffer<'_, Recording, B, Inside> {
 			std::slice::from_raw_parts(data as *const T as *const u8, std::mem::size_of::<T>())
 		};
 		self.device.cmd_push_constants(self.buffer, layout, stages, offset, bytes);
-	}
-}
-
-
-impl<S, B: Backend >  Drop for Buffer<'_, S, B> {
-	fn drop(&mut self) {
-		if self.memory != B::null_memory() {
-			self.device.destroy_buffer(self.handle);
-			self.device.free_memory(self.memory);
-		}
 	}
 }
 
@@ -391,7 +479,9 @@ impl<'dev, B: Backend> Buffer<'dev, buf_state::VertexBuffer, B> {
 
 // ─── UniformReadOnly back to TransferDst ─────────────────────
 
-impl<'dev, B: Backend> Buffer<'dev, buf_state::UniformReadOnly, B> {
+impl<'dev, B: Backend> Buffer<'dev, buf_state::UniformReadOnly, B>
+	where B::Allocation: Allocation<Memory = B::DeviceMemory> + Default
+{
 	pub fn into_transfer_dst(
 		mut self,
 		cmd: &CommandBuffer<'_, Recording, B>,
@@ -411,22 +501,37 @@ impl<'dev, B: Backend> Buffer<'dev, buf_state::UniformReadOnly, B> {
 
 
 
-impl<'dev, B: Backend> Buffer<'dev, buf_state::TransferSrc, B> {
+
+// CHANGE: `staging` now takes a SubAllocation from the caller instead of
+// calling allocate_memory internally. Same pattern as `allocate` above —
+// GpuContext calls sub_alloc() first and passes the ticket in.
+impl<'dev, B: Backend> Buffer<'dev, buf_state::TransferSrc, B>
+	where B::Allocation: Allocation<Memory = B::DeviceMemory>
+{
 	pub fn staging(
 		device: &'dev B::Device,
-		size: u64,
-		memory_type_index: u32,
+		logical_size: u64,
+		sub_allocator:    B::Allocation,
 		family: u32,
 	) -> Result<Self, B::Error> {
-		let handle = device.create_buffer(size, BufferUsage::TRANSFER_SRC)?;
-		let mem_req = device.get_buffer_memory_requirements(handle);
-		let memory = device.allocate_memory(mem_req.size, memory_type_index)?;
-		device.bind_buffer_memory(handle, memory, 0)?;
-		Ok(Self { device, handle, memory, size, family, _state: PhantomData })
+		let offset = sub_allocator.memory_offset();
+		let memory = sub_allocator.memory();
+		
+		let handle = device.create_buffer(logical_size, BufferUsage::TRANSFER_SRC)?;
+		device.bind_buffer_memory(handle, memory, offset)?;
+		
+		Ok(Self {
+			device,
+			handle,
+			sub_allocator: Some(sub_allocator),
+			logical_size,
+			family,
+			_state: PhantomData,
+		})
 	}
-	
 	pub fn write<T: Copy>(&self, data: &[T]) -> Result<(), B::Error> {
-		assert!(std::mem::size_of_val(data) as u64 <= self.size, "data exceeds buffer size");
+		let bytes = std::mem::size_of_val(data) as u64;
+		assert!(bytes <= self.logical_size, "data exceeds buffer logical size");
 		self.with_mapped(data.len(), |slice| {
 			slice.copy_from_slice(data);
 		})
@@ -435,25 +540,36 @@ impl<'dev, B: Backend> Buffer<'dev, buf_state::TransferSrc, B> {
 
 //from_raw constructor to Buffer that allows the memory to be null or "ignored" for cases
 // where the buffer doesn't own its memory (like a view into a staging buffer).
+// CHANGE: from_raw_view no longer stores B::null_memory().
+// Non-owning views (e.g. swapchain buffer views) do not participate in the
+// arena at all. The sub field is filled with B::null_allocation() — a
+// sentinel whose drop is a guaranteed no-op. This replaces the old
+// `if self.memory != B::null_memory()` guard in Drop.
 impl<'dev, S, B: Backend> Buffer<'dev, S, B> {
 	pub(crate) fn from_raw_view(
 		device: &'dev B::Device,
 		handle: B::Buffer,
-		size: u64,
+		size:   u64,
 		family: u32,
 	) -> Self {
 		Self {
 			device,
 			handle,
-			memory: B::null_memory(),
-			size,
+			// CHANGE: was `memory: B::null_memory()` — now uses the null
+			// allocation sentinel so Drop stays uniform (always calls
+			// destroy_buffer, never free_memory).
+			sub_allocator: None,
+			logical_size: size,
 			family,
-			_state: PhantomData
+			_state: PhantomData,
 		}
 	}
 }
 
-impl<'dev, B: Backend> Buffer<'dev, buf_state::TransferDst, B> {
+
+impl<'dev, B: Backend> Buffer<'dev, buf_state::TransferDst, B>
+	where B::Allocation: Allocation<Memory = B::DeviceMemory> + Default
+{
 	pub fn into_vertex_buffer(
 		mut self,
 		cmd: &CommandBuffer<'_, Recording, B>,

@@ -16,57 +16,84 @@ pub struct QueueDiscovery {
 }
 
 impl QueueDiscovery {
-	pub fn find_queue(instance: &VulkanInstance, physical: &PhysicalDevice, surface: Option<&Surface>)	-> Self {
-		let families = unsafe { instance.instance().get_physical_device_queue_family_properties(physical.handle()) };
+	pub fn find_queue(
+		instance: &VulkanInstance,
+		physical: &PhysicalDevice,
+		surface: Option<&Surface>,
+	) -> Self {
+		let families = unsafe {
+			instance
+				.instance()
+				.get_physical_device_queue_family_properties(physical.handle())
+		};
 		
-		// We'll collect all dedicated transfer families here
-		let mut transfer_list = Vec::new();
 		let mut graphics = None;
 		let mut compute = None;
+		let mut transfer = None;
 		let mut present = None;
 		
 		for (index, props) in families.iter().enumerate() {
 			let i = index as u32;
 			let flags = props.queue_flags;
 			
-			// 1. Graphics (Usually Family 0)
+			// --- GRAPHICS ---
 			if flags.contains(vk::QueueFlags::GRAPHICS) && graphics.is_none() {
 				graphics = Some(i);
 			}
 			
-			// 2. Compute (Prefer Dedicated Family 2)
-			let is_dedicated_compute = flags.contains(vk::QueueFlags::COMPUTE) && !flags.contains(vk::QueueFlags::GRAPHICS);
+			// --- COMPUTE (prefer dedicated) ---
+			let dedicated_compute =
+				flags.contains(vk::QueueFlags::COMPUTE)
+					&& !flags.contains(vk::QueueFlags::GRAPHICS);
+			
 			if flags.contains(vk::QueueFlags::COMPUTE) {
-				if is_dedicated_compute || compute.is_none() {
+				if dedicated_compute || compute.is_none() {
 					compute = Some(i);
 				}
 			}
 			
-			// 3. Transfer (Collect ALL Dedicated: 1, 3, 4, 5)
-			let is_dedicated_transfer = flags.contains(vk::QueueFlags::TRANSFER) && !flags.contains(vk::QueueFlags::GRAPHICS);
-			if flags.contains(vk::QueueFlags::TRANSFER) && is_dedicated_transfer {
-				transfer_list.push(i);
+			// --- TRANSFER (pick ONE dedicated only) ---
+			let dedicated_transfer =
+				flags.contains(vk::QueueFlags::TRANSFER)
+					&& !flags.contains(vk::QueueFlags::GRAPHICS)
+					&& !flags.contains(vk::QueueFlags::COMPUTE);
+			
+			if transfer.is_none() && dedicated_transfer {
+				transfer = Some(i);
 			}
 			
-			// 4. Present
+			// --- PRESENT ---
 			if let Some(s) = surface {
-				if unsafe { s.supports_queue_family(physical.handle(), i).unwrap_or(false) } {
-					if present.is_none() { present = Some(i); }
+				if unsafe {
+					s.supports_queue_family(physical.handle(), i).unwrap_or(false)
+				} {
+					if present.is_none() {
+						present = Some(i);
+					}
 				}
 			}
 		}
 		
-		// FALLBACK: If NO dedicated transfer lanes exist (e.g. integrated GPU),
-		// use the graphics family so the list isn't empty.
-		if transfer_list.is_empty() {
-			if let Some(g) = graphics { transfer_list.push(g); }
-		}
+		// --- FALLBACKS ---
+		
+		let graphics = graphics.expect("No graphics queue");
+		
+		let compute = compute.unwrap_or(graphics);
+		
+		let transfer = transfer.unwrap_or(graphics);
+		
+		// --- ALIAS FIX ---
+		let transfer = if transfer == compute {
+			graphics
+		} else {
+			transfer
+		};
 		
 		Self {
-			graphics,
-			compute,
+			graphics: Some(graphics),
+			compute: Some(compute),
 			present,
-			transfer: transfer_list, // Now discovery.transfer is the full Vec<u32>
+			transfer: vec![transfer], // ALWAYS exactly one
 		}
 	}
 }

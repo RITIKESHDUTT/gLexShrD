@@ -18,26 +18,30 @@ fn particle_vert(
 	let speed = vel.length();
 	let dist  = pos.length();
 	
-	out_position   = vec4(pos.x / params.aspect_ratio, pos.y, 0.0, 1.0);
-	out_point_size = clamp(mix(3.0, 2.0, clamp(dist * 2.0, 0.0, 1.0)), 3.5, 6.0);
+	let aspect = params.surface_extent.x / params.surface_extent.y;
+	out_position = vec4(pos.x / aspect, pos.y, 0.0, 1.0);
 	
-	let core_color  = vec3(1.0,  0.95, 0.85);
-	let inner_color = vec3(1.0,  0.7,  0.35);
-	let mid_color   = vec3(0.5,  0.65, 1.0);
-	let outer_color = vec3(0.3,  0.35, 0.8);
+	// Dense starfield — small points
+	out_point_size = clamp(1.5 + dist * 3.0, 1.5, 4.5);
 	
-	let d = clamp(dist * 2.5, 0.0, 1.0);
+	// ── Galaxy palette: warm nucleus → blue-white disk → blue edge ──────
+	let nucleus = vec3(1.0,  0.9,  0.7);
+	let inner   = vec3(1.0,  0.85, 0.6);
+	let mid     = vec3(0.8,  0.85, 1.0);
+	let outer   = vec3(0.4,  0.5,  0.95);
+	
+	let d = clamp(dist * 1.3, 0.0, 1.0);
 	let mut rgb = vec3(0.0, 0.0, 0.0);
-	if d < 0.15 {
-		rgb = core_color.mix(inner_color, d / 0.15);
-	} else if d < 0.45 {
-		rgb = inner_color.mix(mid_color, (d - 0.15) / 0.3);
+	if d < 0.1 {
+		rgb = nucleus.mix(inner, d / 0.1);
+	} else if d < 0.4 {
+		rgb = inner.mix(mid, (d - 0.1) / 0.3);
 	} else {
-		rgb = mid_color.mix(outer_color, (d - 0.45) / 0.55);
+		rgb = mid.mix(outer, (d - 0.4) / 0.6);
 	}
 	
-	// Brighten fast-moving particles
-	rgb *= 0.8 + clamp(speed * 3.0, 0.0, 0.8);
+	// Slight speed boost
+	rgb = rgb * (0.7 + clamp(speed * 2.0, 0.0, 0.6));
 	
 	// Fade slow particles slightly
 	let alpha = mix(0.6, 0.9, clamp(speed * 4.0, 0.0, 1.0));

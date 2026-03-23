@@ -5,29 +5,20 @@ use gLexShrD::VulkanContext;
 use glex_platform::platform::WindowConfig;
 use gLexShrD::WaylandPlatform;
 use gLexShrD::Glex;
-use glex_platform::platform::{ControlFlow};
 
 #[cfg(test)]
-#[test]
 pub fn empty_window() {
+	tracing_subscriber::fmt()
+		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+		.init();
 	let title = "gLexShrD Demo - Particle Vortex";
 	let mut platform = WaylandPlatform::new().unwrap();
 	let mut window = platform.create_window(WindowConfig::new(title, 1280, 720)).unwrap();
 	
 	let (ctx, surface) = VulkanContext::new::<WaylandWindowImpl>(&window).unwrap();
-	
 	let mut glex = Glex::app(&ctx, &surface, &window).expect("Failed");
 	window.set_theme( CsdTheme { window_bg: Color::DARK_SLATE_GRAY, ..CsdTheme::default()});
 	
-	loop {
-		let (control_flow, _events) = window.pump();
-		if matches!(control_flow, ControlFlow::Exit) {
-			break;
-		}
-		let frame = glex.begin_frame(&ctx, &mut window).expect("Failed");
-		if let Some((graph, _info)) = frame {
-			glex.end_frame(&ctx, &mut window, graph).expect("Failed");
-		};
-	}
-	glex.device().wait_idle().unwrap();
+	let app  = glex.run(&ctx, &mut window).expect("Failed");
+	
 }

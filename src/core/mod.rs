@@ -26,6 +26,7 @@ pub use backend::{
 	ImageBarrierInfo,
 	RenderingDesc,
 	SemaphoreSubmit,
+	Allocation
 };
 
 pub use resource::{

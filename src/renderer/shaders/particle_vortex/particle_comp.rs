@@ -75,7 +75,7 @@ fn curl(p: Vec2, t: f32) -> Vec2 {
 	vec2(n - s, -(e - w)) / (2.0 * eps)
 }
 // ── Compute Kernel ────────────────────────────────────────────────────────────
-#[compute_shader(workgroup = 512, helpers = [MOD289_V3_GLSL, MOD289_V2_GLSL, PERMUTE_GLSL, SNOISE_GLSL, CURL_GLSL])]
+#[compute_shader(workgroup = 512, helpers = [mod289_v3, mod289_v2, permute, snoise, curl])]
 fn particle_comp(
 	#[storage(set = 0, binding = 0, read)] particles_in:  &[Vec4],
 	#[storage(set = 0, binding = 1, write)] particles_out: &mut [Vec4],

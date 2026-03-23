@@ -31,7 +31,10 @@ glex-shader-types = { path = "glex-shader-types" }
 glex-platform = { path = "glex-platform" }
 bitflags = "2.11.0"
 arrayvec = "0.7.6"
-
+log = "0.4.29"
+rand = "0.10.0"
+tracing = "0.1.44"
+tracing-subscriber ={ version = "0.3.23", features = ["env-filter"] }
 
 [profile.dev]
 opt-level = 0

@@ -13,6 +13,7 @@ pub struct RectPush {
 	pub(crate) radius:      f32,
 	pub(crate) _pad:        f32,
 	pub(crate) color:       Vec4,
+	pub(crate) _pad2:       Vec4,
 }
 
 

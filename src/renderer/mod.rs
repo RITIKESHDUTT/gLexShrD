@@ -7,7 +7,7 @@ mod windowed;
 pub use pipelines::GlyphAtlas;
 pub use pipelines::{CsdPipelines, RectPush, TextPush, TextSet, ParticleCPipelines, ParticleGPipelines, GFX_PUSH_RANGE, COMP_PUSH_RANGE};
 pub use shader_utils::{Vertex2D, UNIT_QUAD, build_graphics_pipeline};
-pub use windowed::{CsdResources, record_csd_layer};
+pub use windowed::{CsdResources, record_csd_layer, CsdPass};
 pub use shaders::{
 	PARTICLE_FRAG_SPV,
 	PARTICLE_COMP_SPV,

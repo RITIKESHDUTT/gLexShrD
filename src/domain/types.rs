@@ -41,7 +41,6 @@ pub enum Stage {
 	Bottom,
 	All,
 }
-
 ///Memory access type - how the resource is read/written.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Access {

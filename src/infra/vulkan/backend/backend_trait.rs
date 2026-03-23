@@ -1,3 +1,7 @@
+use std::fmt::Debug;
+use crate::core::Allocation;
+use crate::infra::vulkan::memory::SubAllocation;
+use crate::infra::vulkan::memory::BlockFactory;
 use crate::core::types::MemoryPropertyFlags;
 use crate::{
 	core::types::{
@@ -34,6 +38,7 @@ use crate::{
 use ash::vk;
 use ash::vk::Handle;
 
+#[derive(Debug)]
 pub struct VulkanBackend;
 
 #[derive(Clone)]
@@ -64,13 +69,6 @@ impl VulkanDevice {
 	}
 }
 
-// impl std::ops::Deref for VulkanDevice {
-// 	type Target = ash::Device;
-// 	fn deref(&self) -> &Self::Target {
-// 		&self.inner
-// 	}
-// }
-
 impl Backend for VulkanBackend {
 	type Device             = VulkanDevice;
 	type Buffer             = vk::Buffer;
@@ -91,6 +89,8 @@ impl Backend for VulkanBackend {
 	type Sampler            = vk::Sampler;
 	type Error              = vk::Result;
 	type Format 			= Format;
+	type Allocation          = SubAllocation<VulkanBackend>;
+	
 	fn image_from_raw(raw: u64) -> vk::Image { vk::Image::from_raw(raw) }
 	fn buffer_from_raw(raw: u64) -> vk::Buffer { vk::Buffer::from_raw(raw) }
 	fn buffer_handle(buf: vk::Buffer) -> u64 { buf.as_raw() }
@@ -653,14 +653,14 @@ impl CommandOps<VulkanBackend> for VulkanDevice {
 		unsafe { self.inner.cmd_pipeline_barrier2(cmd, &dep); }
 	}
 	
-	fn cmd_copy_buffer(&self, cmd: vk::CommandBuffer, src: vk::Buffer, dst: vk::Buffer, src_offset: u64, dst_offset: u64,
-					   size: u64) {
+	fn cmd_copy_buffer(&self, cmd: vk::CommandBuffer, src: vk::Buffer, dst: vk::Buffer, src_offset: u64, dst_offset: u64, size: u64) {
 		let region = vk::BufferCopy { src_offset, dst_offset, size };
 		unsafe { self.inner.cmd_copy_buffer(cmd, src, dst, &[region]); }
 	}
 	
-	fn cmd_copy_buffer_to_image(&self, cmd: vk::CommandBuffer, src: vk::Buffer, dst: vk::Image, extent: Extent3D) {
+	fn cmd_copy_buffer_to_image(&self, cmd: vk::CommandBuffer, src: vk::Buffer, src_offset: u64, dst: vk::Image, extent: Extent3D) {
 		let region = vk::BufferImageCopy::default()
+			.buffer_offset(src_offset)
 			.image_subresource(
 				vk::ImageSubresourceLayers::default()
 					.aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -930,4 +930,69 @@ impl From<vk::Result> for BackendError {
 	fn from(err: vk::Result) -> Self {
 		Self::Vulkan(err)
 	}
+}
+
+
+
+
+// ── impl BlockFactory for VulkanDevice ───────────────────────────────────────
+
+/// Bridge `BlockFactory` to the existing `VulkanDevice`. No new logic —
+/// `allocate_memory` and `free_memory` are already implemented on
+/// `VulkanDevice` via `DeviceOps<VulkanBackend>`.
+impl BlockFactory for <VulkanBackend as Backend>::Device {
+	fn allocate_block(
+		&self,
+		size: u64,
+		memory_type_index: u32,
+	) -> Result<(vk::Buffer, vk::DeviceMemory, u64), vk::Result> {
+		// Delegates to DeviceOps::allocate_memory which calls vkAllocateMemory.
+		let buffer = self.create_buffer(
+			size,
+			BufferUsage::STORAGE
+				| BufferUsage::VERTEX
+				| BufferUsage::TRANSFER_DST
+				| BufferUsage::TRANSFER_SRC,
+		)?;
+		
+		let req = self.get_buffer_memory_requirements(buffer);
+		
+		let memory = self.allocate_memory(req.size, memory_type_index)?;
+		
+		self.bind_buffer_memory(buffer, memory, 0)?;
+		
+		Ok((buffer, memory, req.size))
+	}
+	
+	fn free_block(&self, buffer: vk::Buffer, memory: vk::DeviceMemory) {
+		// Delegates to DeviceOps::free_memory which calls vkFreeMemory.
+		// SAFETY: The caller (flush_device_frees) only passes handles that
+		// reap() has confirmed are fully empty (live_allocations == 0) and
+		// no longer referenced by any SubAllocation.
+		self.destroy_buffer(buffer);
+		self.free_memory(memory);
+	}
+}
+
+
+impl<B: Backend> Allocation for SubAllocation<B>
+	where
+		B::DeviceMemory: Copy + Debug + Send + Eq,
+		B::Buffer: Copy + Debug + Eq,
+{
+	type Memory = B::DeviceMemory;
+	type Buffer = B::Buffer;
+	
+	fn memory(&self) -> Self::Memory {
+		self.memory()
+	}
+	fn finalize_lifetime(&mut self, t: u64) { self.finalize_lifetime(t); }
+	fn memory_offset(&self) -> u64 { self.offset() }
+	fn size(&self)   -> u64 { self.size()   }
+	fn block_idx(&self) -> u32 { self.block_idx() }
+	
+	fn buffer(&self) -> Self::Buffer {
+		self.buffer()
+	}
+
 }

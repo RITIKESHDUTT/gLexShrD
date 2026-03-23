@@ -3,7 +3,7 @@ use crate::core::render::cache::PipelineId;
 use {
 	crate::core::{
 		type_state_queue::{Compute, Graphics, Transfer},
-		types::PushConstantRange,
+		types::{PushConstantRange, Extent3D},
 	},
 	crate::domain::{
 		DescriptorSetId,
@@ -21,6 +21,8 @@ use {
 		marker::PhantomData,
 	},
 };
+
+use tracing::{debug, info, instrument, trace, warn};
 
 #[derive(Debug)]
 pub struct BarrierEdge {
@@ -73,21 +75,43 @@ pub struct PassBuilder<'a, D> {
 
 impl<D> PassBuilder<'_, D> {
 	pub fn reads(mut self, resource: ResourceId, usage: UsageIntent) -> Self {
+		trace!(
+                        pass_id = self.id,
+                        resource,
+                        stage = ?usage.stage(),
+                        access = ?usage.access(),
+                        "PassBuilder::reads"
+                );
 		self.reads.push((resource, usage));
 		self
 	}
 	
 	pub fn writes(mut self, resource: ResourceId, usage: UsageIntent) -> Self {
+		trace!(
+                        pass_id = self.id,
+                        resource,
+                        stage = ?usage.stage(),
+                        access = ?usage.access(),
+                        "PassBuilder::writes"
+                );
 		self.writes.push((resource, usage));
 		self
 	}
 	
 	pub fn descriptor_set(mut self, id: DescriptorSetId) -> Self {
+		trace!(pass_id = self.id, ?id, "PassBuilder::descriptor_set");
 		self.descriptor_set = Some(id);
 		self
 	}
 	
 	pub fn push_constants(mut self, range: PushConstantRange, data: &[u8]) -> Self {
+		trace!(
+                        pass_id = self.id,
+                        offset = range.offset,
+                        size = range.size,
+                        data_len = data.len(),
+                        "PassBuilder::push_constants"
+                );
 		self.commands.push(PassCommand::PushConstants {
 			range,
 			data: data.into(),
@@ -98,6 +122,17 @@ impl<D> PassBuilder<'_, D> {
 	pub fn submit(self) -> PassId {
 		self.validate_resource_declarations();
 		let id = self.id;
+		debug!(
+                        pass_id = id,
+                        domain = ?self.domain,
+                        pipeline = ?self.pipeline,
+                        read_count = self.reads.len(),
+                        write_count = self.writes.len(),
+                        command_count = self.commands.len(),
+                        has_viewport = self.viewport.is_some(),
+                        has_scissor = self.scissor.is_some(),
+                        "PassBuilder::submit — finalizing pass"
+                );
 		self.graph.passes.push(PassDecl {
 			id,
 			pipeline: self.pipeline,
@@ -112,17 +147,37 @@ impl<D> PassBuilder<'_, D> {
 		id
 	}
 	
-	
 	fn validate_resource_declarations(&self) {
 		for cmd in &self.commands {
 			match cmd {
-				PassCommand::BindVertexBuffer(id) | PassCommand::BindIndexBuffer(id) => {
+				PassCommand::BindVertexBuffer(id, _) | PassCommand::BindIndexBuffer(id, _) => {
+					if !self.reads.iter().any(|(r, _)| r == id) {
+						warn!(
+                                                        pass_id = self.id,
+                                                        resource = ?id,
+                                                        "Resource bound in command but not declared in reads()"
+                                                );
+					}
 					debug_assert!(
 						self.reads.iter().any(|(r, _)| r == id),
 						"Resource {id:?} bound in command but not declared in reads()"
 					);
 				}
 				PassCommand::CopyBuffer { src, dst, .. } => {
+					if !self.reads.iter().any(|(r, _)| r == src) {
+						warn!(
+                                                        pass_id = self.id,
+                                                        resource = ?src,
+                                                        "Copy source not declared in reads()"
+                                                );
+					}
+					if !self.writes.iter().any(|(r, _)| r == dst) {
+						warn!(
+                                                        pass_id = self.id,
+                                                        resource = ?dst,
+                                                        "Copy destination not declared in writes()"
+                                                );
+					}
 					debug_assert!(
 						self.reads.iter().any(|(r, _)| r == src),
 						"Resource {src:?} used as copy source but not declared in reads()"
@@ -141,60 +196,77 @@ impl<D> PassBuilder<'_, D> {
 
 impl PassBuilder<'_, Graphics> {
 	pub fn bind_pipeline(mut self, id: PipelineId) -> Self {
+		trace!(pass_id = self.id, ?id, "Graphics::bind_pipeline");
 		self.commands.push(PassCommand::BindPipeline(id));
 		self
 	}
 	
 	pub fn draw(mut self, vertex_count: u32) -> Self {
+		trace!(pass_id = self.id, vertex_count, "Graphics::draw");
 		self.commands.push(PassCommand::Draw { vertex_count });
 		self
 	}
 	
 	pub fn draw_indexed(mut self, index_count: u32, instance_count: u32, first_index: u32) -> Self {
+		trace!(
+                        pass_id = self.id,
+                        index_count,
+                        instance_count,
+                        first_index,
+                        "Graphics::draw_indexed"
+                );
 		self.commands.push(PassCommand::DrawIndexed { index_count, instance_count, first_index });
 		self
 	}
 	
-	pub fn bind_vertex_buffer(mut self, resource: ResourceId) -> Self {
-		self.commands.push(PassCommand::BindVertexBuffer(resource));
+	pub fn bind_vertex_buffer(mut self, resource: ResourceId, offset: u64) -> Self {
+		trace!(pass_id = self.id, resource, offset, "Graphics::bind_vertex_buffer");
+		self.commands.push(PassCommand::BindVertexBuffer(resource, offset));
 		self
 	}
 	
-	pub fn bind_index_buffer(mut self, resource: ResourceId) -> Self {
-		self.commands.push(PassCommand::BindIndexBuffer(resource));
+	pub fn bind_index_buffer(mut self, resource: ResourceId, offset: u64) -> Self {
+		trace!(pass_id = self.id, resource, offset, "Graphics::bind_index_buffer");
+		self.commands.push(PassCommand::BindIndexBuffer(resource, offset));
 		self
 	}
 	
 	pub fn bind_descriptor_set(mut self, id: DescriptorSetId) -> Self {
+		trace!(pass_id = self.id, ?id, "Graphics::bind_descriptor_set");
 		self.commands.push(PassCommand::BindDescriptorSet(id));
 		self
 	}
 	pub fn set_viewport(mut self, x: f32, y: f32, w: f32, h: f32) -> Self {
+		trace!(pass_id = self.id, x, y, w, h, "Graphics::set_viewport");
 		self.viewport = Some((x, y, w, h));
 		self
 	}
 	
 	pub fn set_scissor(mut self, x: i32, y: i32, w: u32, h: u32) -> Self {
+		trace!(pass_id = self.id, x, y, w, h, "Graphics::set_scissor");
 		self.scissor = Some((x, y, w, h));
 		self
 	}
-
+	
 }
 
 // ─── Compute impl ───────────────────────────────────────────
 
 impl PassBuilder<'_, Compute> {
 	pub fn bind_pipeline(mut self, id: PipelineId) -> Self {
+		trace!(pass_id = self.id, ?id, "Compute::bind_pipeline");
 		self.commands.push(PassCommand::BindPipeline(id));
 		self
 	}
 	
 	pub fn dispatch(mut self, x: u32, y: u32, z: u32) -> Self {
+		trace!(pass_id = self.id, x, y, z, "Compute::dispatch");
 		self.commands.push(PassCommand::Dispatch { x, y, z });
 		self
 	}
 	
 	pub fn bind_descriptor_set(mut self, id: DescriptorSetId) -> Self {
+		trace!(pass_id = self.id, ?id, "Compute::bind_descriptor_set");
 		self.commands.push(PassCommand::BindDescriptorSet(id));
 		self
 	}
@@ -204,6 +276,14 @@ impl PassBuilder<'_, Compute> {
 
 impl PassBuilder<'_, Transfer> {
 	pub fn copy_buffer(mut self, src: ResourceId, dst: ResourceId, size: u64, dst_offset: u64) -> Self {
+		trace!(
+                        pass_id = self.id,
+                        src,
+                        dst,
+                        size,
+                        dst_offset,
+                        "Transfer::copy_buffer"
+                );
 		self.commands.push(PassCommand::CopyBuffer { src, dst, size, dst_offset });
 		self
 	}
@@ -219,6 +299,7 @@ pub struct FrameGraph {
 
 impl FrameGraph {
 	pub fn new() -> Self {
+		trace!("FrameGraph::new");
 		Self {
 			resources: Vec::new(),
 			passes: Vec::new(),
@@ -230,11 +311,21 @@ impl FrameGraph {
 	pub fn add_resource(&mut self, kind: ResourceKind, handle: ResourceHandle) -> ResourceId {
 		let id = self.next_resource_id;
 		self.next_resource_id += 1;
+		trace!(resource_id = id, ?kind, ?handle, "FrameGraph::add_resource");
 		self.resources.push(ResourceDecl { id, kind, handle });
 		id
 	}
-	pub fn add_buffer(&mut self, handle:u64) -> ResourceId {
-		self.add_resource(ResourceKind::Buffer, ResourceHandle::Buffer(handle))
+	pub fn add_image(
+		&mut self,
+		handle: u64,
+		extent: Extent3D,
+	) -> ResourceId {
+		trace!(handle, ?extent, "FrameGraph::add_image");
+		self.add_resource(ResourceKind::Image, ResourceHandle::Image { raw: handle, extent})
+	}
+	pub fn add_buffer(&mut self, handle: u64, offset: u64, size: u64 ) -> ResourceId {
+		trace!(handle, offset, size, "FrameGraph::add_buffer");
+		self.add_resource(ResourceKind::Buffer, ResourceHandle::Buffer { raw: handle, offset, size }, )
 	}
 	pub fn resource(&self, id: ResourceId) -> &ResourceDecl {
 		self.resources.iter().find(|r| r.id == id).expect("resource not found")
@@ -243,6 +334,7 @@ impl FrameGraph {
 	pub fn add_graphics_pass(&mut self, pipeline: Option<PipelineId>) -> PassBuilder<'_, Graphics> {
 		let id = self.next_pass_id;
 		self.next_pass_id += 1;
+		debug!(pass_id = id, ?pipeline, "FrameGraph::add_graphics_pass");
 		PassBuilder {
 			graph: self,
 			id,
@@ -261,6 +353,7 @@ impl FrameGraph {
 	pub fn add_compute_pass(&mut self, pipeline: Option<PipelineId>) -> PassBuilder<'_, Compute> {
 		let id = self.next_pass_id;
 		self.next_pass_id += 1;
+		debug!(pass_id = id, ?pipeline, "FrameGraph::add_compute_pass");
 		PassBuilder {
 			graph: self,
 			id,
@@ -279,6 +372,7 @@ impl FrameGraph {
 	pub fn add_transfer_pass(&mut self) -> PassBuilder<'_, Transfer> {
 		let id = self.next_pass_id;
 		self.next_pass_id += 1;
+		debug!(pass_id = id, "FrameGraph::add_transfer_pass");
 		PassBuilder {
 			graph: self,
 			id,
@@ -295,17 +389,32 @@ impl FrameGraph {
 	}
 	
 	
+	#[instrument(skip_all, name = "FrameGraph::compile_dependencies")]
 	pub(crate) fn compile_dependencies(&self) -> Result<ExecutionOrder, GraphError> {
 		struct ResourceState {
 			last_write: Option<(PassId, UsageIntent, PassDomain)>,
 			readers: Vec<(PassId, UsageIntent, PassDomain)>,
 		}
 		
+		debug!(
+                        pass_count = self.passes.len(),
+                        resource_count = self.resources.len(),
+                        "Compiling dependencies"
+                );
+		
 		let mut state: HashMap<ResourceId, ResourceState> = HashMap::new();
 		let mut edge_set: HashSet<(PassId, PassId)> = HashSet::new();
 		let mut barriers: Vec<BarrierEdge> = Vec::new();
 		
 		for pass in &self.passes {
+			trace!(
+                                pass_id = pass.id,
+                                domain = ?pass.domain,
+                                read_count = pass.reads.len(),
+                                write_count = pass.writes.len(),
+                                "Processing pass"
+                        );
+			
 			// Reads: need barrier from last writer (RAW)
 			for &(res, dst_usage) in &pass.reads {
 				let rs = state.entry(res).or_insert_with(|| ResourceState {
@@ -315,6 +424,18 @@ impl FrameGraph {
 				
 				if let Some((writer_id, writer_usage, writer_domain)) = rs.last_write {
 					if writer_id != pass.id && edge_set.insert((writer_id, pass.id)) {
+						trace!(
+                                                        resource = res,
+                                                        from_pass = writer_id,
+                                                        to_pass = pass.id,
+                                                        src_domain = ?writer_domain,
+                                                        dst_domain = ?pass.domain,
+                                                        src_stage = ?writer_usage.stage(),
+                                                        src_access = ?writer_usage.access(),
+                                                        dst_stage = ?dst_usage.stage(),
+                                                        dst_access = ?dst_usage.access(),
+                                                        "RAW barrier"
+                                                );
 						barriers.push(BarrierEdge {
 							resource: res,
 							from_pass: writer_id,
@@ -325,6 +446,12 @@ impl FrameGraph {
 							dst_domain: pass.domain,
 						});
 					}
+				} else {
+					trace!(
+                                                resource = res,
+                                                pass_id = pass.id,
+                                                "Read with no prior writer — no barrier needed"
+                                        );
 				}
 				
 				rs.readers.push((pass.id, dst_usage, pass.domain));
@@ -340,6 +467,14 @@ impl FrameGraph {
 				// WAW: barrier from previous writer
 				if let Some((writer_id, writer_usage, writer_domain)) = rs.last_write {
 					if writer_id != pass.id && edge_set.insert((writer_id, pass.id)) {
+						trace!(
+                                                        resource = res,
+                                                        from_pass = writer_id,
+                                                        to_pass = pass.id,
+                                                        src_domain = ?writer_domain,
+                                                        dst_domain = ?pass.domain,
+                                                        "WAW barrier"
+                                                );
 						barriers.push(BarrierEdge {
 							resource: res,
 							from_pass: writer_id,
@@ -355,6 +490,14 @@ impl FrameGraph {
 				// WAR: barrier from each reader
 				for &(reader_id, reader_usage, reader_domain) in &rs.readers {
 					if reader_id != pass.id && edge_set.insert((reader_id, pass.id)) {
+						trace!(
+								resource = res,
+								from_pass = reader_id,
+								to_pass = pass.id,
+								src_domain = ?reader_domain,
+								dst_domain = ?pass.domain,
+								"WAR barrier"
+						);
 						barriers.push(BarrierEdge {
 							resource: res,
 							from_pass: reader_id,
@@ -391,6 +534,13 @@ impl FrameGraph {
 		
 		queue.sort_by(|a, b| b.cmp(a));
 		
+		trace!(
+				roots = queue.len(),
+				edge_count = edge_set.len(),
+				barrier_count = barriers.len(),
+				"Topological sort starting"
+                );
+		
 		let mut ordered = Vec::with_capacity(pass_count);
 		
 		while let Some(pass_id) = queue.pop() {
@@ -409,7 +559,40 @@ impl FrameGraph {
 		}
 		
 		if ordered.len() != pass_count {
+			warn!(
+                                ordered = ordered.len(),
+                                expected = pass_count,
+                                "Cycle detected in frame graph"
+                        );
 			return Err(GraphError::CycleDetected);
+		}
+		
+		debug!(
+				ordered_passes = ?ordered,
+				barrier_count = barriers.len(),
+				"Dependency compilation complete"
+                );
+		
+		for (i, &pid) in ordered.iter().enumerate() {
+			let domain = self.passes.iter().find(|p| p.id == pid).map(|p| &p.domain);
+			trace!(order = i, pass_id = pid, domain = ?domain, "Execution order");
+		}
+		
+		for (i, b) in barriers.iter().enumerate() {
+			trace!(
+					idx = i,
+					resource = b.resource,
+					from_pass = b.from_pass,
+					to_pass = b.to_pass,
+					src_domain = ?b.src_domain,
+					dst_domain = ?b.dst_domain,
+					src_stage = ?b.src_usage.stage(),
+					dst_stage = ?b.dst_usage.stage(),
+					src_access = ?b.src_usage.access(),
+					dst_access = ?b.dst_usage.access(),
+					cross_queue = (b.src_domain != b.dst_domain),
+					"Barrier summary"
+			);
 		}
 		
 		Ok(ExecutionOrder {
@@ -470,9 +653,23 @@ pub struct CompiledGraph {
 impl  FrameGraph {
 	
 	/// Consumes the graph IR: dependency analysis → barrier placement → lowering.
+	#[instrument(skip_all, name = "FrameGraph::compile")]
 	pub fn compile(self) -> Result<CompiledGraph, GraphError> {
+		debug!(
+                        pass_count = self.passes.len(),
+                        resource_count = self.resources.len(),
+                        "Compiling frame graph"
+                );
 		let order = self.compile_dependencies()?;
-		let compiled_passes = self.passes.into_iter().map(|decl| {
+		
+		let compiled_passes: Vec<CompiledPass> = self.passes.into_iter().map(|decl| {
+			trace!(
+					pass_id = decl.id,
+					domain = ?decl.domain,
+					pipeline = ?decl.pipeline,
+					command_count = decl.commands.len(),
+					"Lowering pass"
+                        );
 			CompiledPass {
 				id: decl.id,
 				pipeline: decl.pipeline,
@@ -483,6 +680,13 @@ impl  FrameGraph {
 				scissor: decl.scissor,
 			}
 		}).collect();
+		
+		info!(
+				pass_count = compiled_passes.len(),
+				barrier_count = order.barriers.len(),
+				ordered_passes = ?order.ordered_passes,
+				"Frame graph compiled"
+                );
 		
 		Ok(CompiledGraph {
 			order,
