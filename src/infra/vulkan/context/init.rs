@@ -18,9 +18,7 @@ use crate::infra::vulkan::backend::{
 	LogicalDevice, PhysicalDevice, QueueDiscovery, QueueLane,
 	Swapchain, VulkanBackend, VulkanDevice, VulkanEntry, VulkanInstance,
 };
-use crate::infra::vulkan::context::presentation::MemoryIndices;
-use crate::core::{Backend, DeviceOps};
-use crate::core::types::BufferUsage;
+use crate::core::{Backend};
 use std::sync::Arc;
 
 pub struct VulkanContext {
@@ -30,8 +28,6 @@ pub struct VulkanContext {
 	pub physical: PhysicalDevice,
 	pub instance: Arc<VulkanInstance>,
 	pub entry:    Arc<VulkanEntry>,
-	/// Memory type indices for swapchain and any non-arena allocations.
-	pub indices:  MemoryIndices,
 }
 
 impl VulkanContext {
@@ -54,13 +50,7 @@ impl VulkanContext {
 		)?;
 		let device = Arc::new(device_raw);
 		
-		// Probe memory indices via a throwaway buffer handle.
-		let tmp     = device.create_buffer(4, BufferUsage::TRANSFER_SRC)?;
-		let req     = device.get_buffer_memory_requirements(tmp);
-		device.destroy_buffer(tmp);
-		let indices = MemoryIndices::find(&physical, &instance, req);
-		
-		Ok((Self { entry, instance, physical, device, lanes, indices }, surface))
+		Ok((Self { entry, instance, physical, device, lanes }, surface))
 	}
 	
 	pub fn headless() -> Result<Self, <VulkanBackend as Backend>::Error> {
@@ -74,12 +64,7 @@ impl VulkanContext {
 		)?;
 		let device = Arc::new(device_raw);
 		
-		let tmp     = device.create_buffer(4, BufferUsage::TRANSFER_SRC)?;
-		let req     = device.get_buffer_memory_requirements(tmp);
-		device.destroy_buffer(tmp);
-		let indices = MemoryIndices::find(&physical, &instance, req);
-		
-		Ok(Self { entry, instance, physical, device, lanes, indices })
+		Ok(Self { entry, instance, physical, device, lanes })
 	}
 	
 	// ── Accessors ─────────────────────────────────────────────────────────────

@@ -216,47 +216,6 @@ impl<'dev> Presentation<'dev> {
 	}
 }
 
-// ── MemoryIndices ────────────────────────────────────────────────────────────
-
-#[derive(Copy, Clone)]
-pub struct MemoryIndices {
-	pub staging: u32,
-	pub device_local: u32,
-	pub transcript: u32,
-}
-
-impl MemoryIndices {
-	pub fn find(
-		physical: &PhysicalDevice,
-		instance: &VulkanInstance,
-		req: MemoryRequirements,
-	) -> Self {
-		let staging = physical.find_memory_type(
-			instance,
-			req,
-			MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-		).expect("No HOST_VISIBLE|HOST_COHERENT memory");
-		
-		let device_local = physical.find_memory_type(
-			instance,
-			req,
-			MemoryPropertyFlags::DEVICE_LOCAL,
-		).expect("No DEVICE_LOCAL memory");
-		
-		let transcript = physical.find_memory_type(
-			instance,
-			req,
-			MemoryPropertyFlags::HOST_VISIBLE,
-		);
-		
-		Self {
-			staging,
-			device_local,
-			transcript: transcript.expect("REASON"),
-		}
-	}
-}
-
 // ── PresentMode ──────────────────────────────────────────────────────────────
 
 #[derive(Copy, Clone, PartialEq, Eq)]
