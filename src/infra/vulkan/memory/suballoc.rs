@@ -29,7 +29,7 @@ pub struct SubAllocation<B: Backend> {
 	memory:       B::DeviceMemory,
 	offset:       u64,
 	size:         u64,
-	block_idx:    u32,
+	block_idx:     Option<u32>,
 	node_idx:     u32,
 	generation:   u32,
 	arena_return: Arc<ReturnQueue<FreeRequest>>,
@@ -62,7 +62,7 @@ impl<B: Backend> SubAllocation<B> {
           );
 		Self {
 			buffer, memory, offset, size,
-			block_idx, node_idx, generation,
+			block_idx: Some(block_idx), node_idx, generation,
 			arena_return,
 			lifetime: Lifetime::Unset,
 		}
@@ -86,7 +86,9 @@ impl<B: Backend> SubAllocation<B> {
 	pub fn memory(&self) -> B::DeviceMemory where B::DeviceMemory: Copy { self.memory }
 	pub fn offset(&self) -> u64 { self.offset }
 	pub fn size(&self)   -> u64 { self.size   }
-	pub fn block_idx(&self) -> u32 {self.block_idx}
+	fn block_idx(&self) -> Option<u32> {
+		if self.block_idx == Some(u32::MAX) { None } else { Some(self.block_idx?) }
+	}
 	pub fn buffer(&self) -> B::Buffer {self.buffer}
 }
 
@@ -116,7 +118,7 @@ impl<B: Backend> Drop for SubAllocation<B> {
               "SubAllocation::drop — pushing FreeRequest"
           );
 		self.arena_return.push(FreeRequest {
-			block_idx:  self.block_idx,
+			block_idx:  self.block_idx.expect("Invalid"),
 			node_idx:   self.node_idx,
 			generation: self.generation,
 			lifetime:   self.lifetime,
@@ -803,23 +805,5 @@ mod tests {
 		for a in live.iter_mut() { a.finalize_lifetime(5001); }
 		drop(live);
 		arena.reap(5001);
-	}
-}
-
-impl<B: Backend> Default for SubAllocation<B>
-	where B::DeviceMemory: Default
-{
-	fn default() -> Self {
-		Self {
-			buffer:          B::Buffer::default(),
-			memory:       B::DeviceMemory::default(),
-			offset:       0,
-			size:         0,
-			block_idx:    u32::MAX,
-			node_idx:     0,
-			generation:   0,
-			arena_return: Arc::new(ReturnQueue::new()),
-			lifetime:     Lifetime::Submitted(0),
-		}
 	}
 }

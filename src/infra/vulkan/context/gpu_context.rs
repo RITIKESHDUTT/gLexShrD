@@ -263,10 +263,3 @@ impl<'dev> GpuContext<'dev, VulkanBackend> {
 		Sampler::new(self.executor.device(), filter, address)
 	}
 }
-
-impl<'dev, B: Backend> Drop for GpuContext<'dev, B> {
-	fn drop(&mut self) {
-		debug!("GpuContext::drop");
-		let _ = self.executor.device();
-	}
-}

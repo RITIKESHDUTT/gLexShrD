@@ -61,9 +61,9 @@ use crate::core::types::{MemoryPropertyFlags, MemoryRequirements};
 use tracing::{debug, info, trace, warn};
 
 // ── Block sizes ──────────────────────────────────────────────────────────────
-pub const DEFAULT_BUFFER_BLOCK_SIZE: u64 =  1024 * 1024 * 1024;
+pub const DEFAULT_BUFFER_BLOCK_SIZE: u64 =  128 * 1024 * 1024;
 
-pub const DEFAULT_IMAGE_BLOCK_SIZE: u64 = 1024 * 1024 ;
+pub const DEFAULT_IMAGE_BLOCK_SIZE: u64 =  1024 * 1024 ;
 
 // ── Error ────────────────────────────────────────────────────────────────────
 

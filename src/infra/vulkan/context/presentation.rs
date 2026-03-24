@@ -18,6 +18,7 @@ pub struct AcquireResult {
 	pub image_index: u32,
 	pub acquire_semaphore: ash::vk::Semaphore,
 	pub render_semaphore: ash::vk::Semaphore,
+	pub suboptimal: bool,
 }
 
 // ── CondemnedSemaphores ──────────────────────────────────────────────────────
@@ -92,17 +93,14 @@ impl<'dev> Presentation<'dev> {
 		
 		match self.swapchain.acquire_next(sem) {
 			Ok((idx, suboptimal)) => {
-				if suboptimal {
-					self.schedule_resize(self.extent().width(), self.extent().height());
-				}
 				Ok(Some(AcquireResult {
 					image_index: idx,
 					acquire_semaphore: sem,
 					render_semaphore: self.swapchain.render_semaphore(idx),
+					suboptimal,
 				}))
 			}
 			Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-				self.schedule_resize(self.extent().width(), self.extent().height());
 				Ok(None)
 			}
 			Err(e) => Err(e),

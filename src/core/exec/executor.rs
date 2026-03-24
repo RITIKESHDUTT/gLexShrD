@@ -306,7 +306,17 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 		present_sync: Option<PresentSync<B>>,
 	) -> Result<u64, GraphError> {
 		let compiled = graph.compile()?;
-		
+		for pass in &compiled.passes {
+			match pass.domain {
+				PassDomain::Compute if self.compute.is_none() => {
+					return Err(GraphError::MissingLane(pass.domain));
+				}
+				PassDomain::Transfer if self.transfer.is_none() => {
+					return Err(GraphError::MissingLane(pass.domain));
+				}
+				_ => {}
+			}
+		}
 		let ExecutionOrder { ordered_passes, barriers } = compiled.order;
 		let mut passes: HashMap<PassId, CompiledPass> = compiled.passes.into_iter().map(|p| (p.id, p)).collect();
 		let resources = compiled.resources;

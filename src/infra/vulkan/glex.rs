@@ -234,15 +234,20 @@ impl<'dev> Glex<'dev> {
               );
             
             self.presentation.gc_retired(self.gpu.timeline_completed());
-            
+           
             // ── acquire (last step before submit) ───────────────
             let acq = match self.presentation.acquire()? {
                 Some(r) => {
+                    if r.suboptimal {
+                        trace!(frame_id, "Acquire suboptimal — scheduling recreate");
+                        self.presentation.schedule_resize(win_ext.width(), win_ext.height());
+                    }
                     trace!(frame_id, image_index = r.image_index, "Acquire success");
                     r
                 }
                 None => {
-                    warn!(frame_id, "Acquire returned None — skipping frame");
+                    warn!(frame_id, "Acquire failed (out of date) — scheduling recreate");
+                    self.presentation.schedule_resize(win_ext.width(), win_ext.height());
                     continue;
                 }
             };
@@ -325,14 +330,17 @@ impl<'dev> Glex<'dev> {
                 "Timeline invariant violated: completed={} signal_val={}",
                 self.gpu.timeline_completed(), signal_val
             );
-            
             // ── present ─────────────────────────────────────────
             trace!(frame_id, image_index = acq.image_index, "Present submission");
             
-        self.presentation.present(
+            let present_stale = self.presentation.present(
                 acq.image_index, acq.render_semaphore,
             )?;
-            
+            if present_stale {
+                trace!(frame_id, "Present reports stale surface — scheduling recreate");
+                self.presentation.schedule_resize(win_ext.width(), win_ext.height());
+            }
+          
             // ── advance ─────────────────────────────────────────
             trace!(
                   frame_id,

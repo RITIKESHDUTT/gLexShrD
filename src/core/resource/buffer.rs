@@ -568,7 +568,7 @@ impl<'dev, S, B: Backend> Buffer<'dev, S, B> {
 
 
 impl<'dev, B: Backend> Buffer<'dev, buf_state::TransferDst, B>
-	where B::Allocation: Allocation<Memory = B::DeviceMemory> + Default
+	where B::Allocation: Allocation<Memory = B::DeviceMemory>
 {
 	pub fn into_vertex_buffer(
 		mut self,

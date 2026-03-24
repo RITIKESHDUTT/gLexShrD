@@ -37,12 +37,6 @@ impl LogicalDevice {
 			instance.instance().get_physical_device_features2(physical.handle(), &mut physical_features2);
 		}
 		
-		if supported_features.swapchain_maintenance1 == vk::TRUE {
-			println!("✅ Hardware supports VK_EXT_swapchain_maintenance1");
-		} else {
-			println!("❌ Hardware DOES NOT support VK_EXT_swapchain_maintenance1");
-		}
-		
 		let priorities = [1.0f32];
 		let mut unique_indices = std::collections::HashSet::new();
 		unique_indices.insert(discovery.graphics);
@@ -61,9 +55,6 @@ impl LogicalDevice {
 			})
 			.collect();
 		
-		let mut maintenance1_features = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
-			.swapchain_maintenance1(true);
-		
 		let mut features_12 = vk::PhysicalDeviceVulkan12Features::default()
 			.timeline_semaphore(true);
 		
@@ -75,8 +66,7 @@ impl LogicalDevice {
 			.queue_create_infos(&queue_infos)
 			.enabled_extension_names(extensions)
 			.push_next(&mut features_13)
-			.push_next(&mut features_12)
-			.push_next(&mut maintenance1_features);
+			.push_next(&mut features_12);
 		
 		let device_handle = unsafe {
 			instance.instance()
