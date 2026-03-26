@@ -10,25 +10,27 @@ fn particle_frag(
 	mut out_color: Vec4o0,
 ) {
 	let d = (point_coord - 0.5).length() * 2.0;
-	let core  = exp(-d * d * 3.0);
-	let glow  = exp(-d * d * 0.8) * 0.4;
-	let total = core - glow;
+	let t = push.frame as f32 * 0.016;
 	
-	// time from frame
-	let t = push.frame as f32 * 0.02;
-	// animated color shift
-	let shift = vec3(
-		(t).sin() * 0.5 + 0.5,
-		(t * 1.3).sin() * 0.5 + 0.5,
-		(t * 0.7).sin() * 0.5 + 0.5,
-	);
+	// ── three-layer soft glow ──
+	let core = exp(-d * d * 10.0);          // bright center
+	let glow = exp(-d * d * 2.5) * 0.4;     // mid halo
+	let haze = exp(-d * 1.5) * 0.12;        // wide atmosphere
 	
-	let base = v_color.rgb() * shift;
-	let color = base * (1.0 + core * 0.8);  // just the glow boost, no color shift
-	let alpha = total * v_color.a();
+	// ── gentle breathing — ±10%, no spikes ──
+	let breath = sin(t * 1.2) * 0.1 + 1.0;
 	
-	out_color = vec4_v3f(color, alpha);
+	let intensity = (core + glow + haze) * breath;
+	
+	// ── warm the core subtly ──
+	let warm = v_color.rgb() + core * vec3(0.1, 0.04, -0.02);
+	
+	let rgb = warm * intensity;
+	let alpha = intensity * v_color.a();
+	
+	out_color = vec4_v3f(rgb, alpha);
 }
+
 
 pub const FRAG_SHADER: &str = PARTICLE_FRAG_GLSL;
 pub static FRAG_SPV: &[u8] = PARTICLE_FRAG_SPV;

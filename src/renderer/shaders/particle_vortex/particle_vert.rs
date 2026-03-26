@@ -11,40 +11,65 @@ fn particle_vert(
 	mut out_point_size: f32,
 	mut v_color: Vec4o0,
 ) {
-	let p: Vec4   = particles[vertex_id as usize];
-	let pos: Vec2 = p.xy();
-	let vel: Vec2 = p.zw();
+	let p0: Vec4 = particles[vertex_id as usize * 2];
+	let p1: Vec4 = particles[vertex_id as usize * 2 + 1];
+	let pos = vec3(p0.x, p0.y, p0.z);
+	let vel = vec3(p1.x, p1.y, p1.z);
 	
 	let speed = vel.length();
-	let dist  = pos.length();
-	
+	let dist  = vec2(pos.x, pos.y).length();
 	let aspect = params.surface_extent.x / params.surface_extent.y;
-	out_position = vec4(pos.x / aspect, pos.y, 0.0, 1.0);
 	
-	// Dense starfield — small points
-	out_point_size = clamp(1.5 + dist * 3.0, 1.5, 4.5);
+	// World: xy = disk plane, z = thickness
+	// Remap to view: x→x, z→y (up), y→z (depth)
+	let wx = pos.x;
+	let wy = pos.z;
+	let wz = pos.y;
 	
-	// ── Galaxy palette: warm nucleus → blue-white disk → blue edge ──────
-	let nucleus = vec3(1.0,  0.9,  0.7);
-	let inner   = vec3(1.0,  0.85, 0.6);
-	let mid     = vec3(0.8,  0.85, 1.0);
-	let outer   = vec3(0.4,  0.5,  0.95);
+	// Camera orbit (Y-axis)
+	let orbit = params.time * 0.3;
+	let ca = cos(orbit);
+	let sa = sin(orbit);
+	let rx =  wx * ca + wz * sa;
+	let rz = -wx * sa + wz * ca;
 	
-	let d = clamp(dist * 1.3, 0.0, 1.0);
+	// Tilt ~35 degrees (X-axis)
+	let tilt = 0.55;
+	let ct = cos(tilt);
+	let st = sin(tilt);
+	let fy = wy * ct - rz * st;
+	let fz = wy * st + rz * ct;
+	
+	// Perspective
+	let cam_dist = 2.2;
+	let z_eye = fz + cam_dist;
+	let scale = 1.8 / z_eye;
+	
+	let px = rx * scale;
+	let py = fy * scale;
+	
+	// apply aspect symmetrically
+	out_position = vec4(px, py * aspect, 0.5, 1.0);
+	out_point_size = clamp(scale * 3.5, 1.0, 7.0);
+	
+	// ── Galaxy palette: warm nucleus → blue-white disk → blue edge ──
+	let nucleus = vec3(1.0, 0.95, 0.85);
+	let inner   = vec3(1.0, 0.7,  0.4);
+	let mid     = vec3(0.5, 0.7,  1.0);
+	let outer   = vec3(0.3, 0.4,  0.95);
+	
+	let d = clamp(dist * 1.5, 0.0, 1.0);
 	let mut rgb = vec3(0.0, 0.0, 0.0);
-	if d < 0.1 {
-		rgb = nucleus.mix(inner, d / 0.1);
-	} else if d < 0.4 {
-		rgb = inner.mix(mid, (d - 0.1) / 0.3);
+	if d < 0.08 {
+		rgb = nucleus.mix(inner, d / 0.08);
+	} else if d < 0.3 {
+		rgb = inner.mix(mid, (d - 0.08) / 0.22);
 	} else {
-		rgb = mid.mix(outer, (d - 0.4) / 0.6);
+		rgb = mid.mix(outer, (d - 0.3) / 0.7);
 	}
 	
-	// Slight speed boost
-	rgb = rgb * (0.7 + clamp(speed * 2.0, 0.0, 0.6));
-	
-	// Fade slow particles slightly
-	let alpha = mix(0.6, 0.9, clamp(speed * 4.0, 0.0, 1.0));
+	rgb = rgb * (0.6 + clamp(speed * 3.0, 0.0, 0.8));
+	let alpha = mix(0.5, 1.0, clamp(speed * 3.0, 0.0, 1.0));
 	
 	v_color = vec4_v3f(rgb, alpha);
 }

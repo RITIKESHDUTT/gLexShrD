@@ -20,7 +20,7 @@ pub struct GfxPush {
 	pub viewport_extent: [f32; 2],  // 8
 	pub surface_extent:  [f32; 2],  // 16
 	pub frame: u32,                 // 24
-	pub _pad: u32,                  // 28 → forces 32 total
+	pub time: f32,                // 28 → forces 32 total
 }
 
 binding!(

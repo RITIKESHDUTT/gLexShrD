@@ -9,7 +9,6 @@ use crate::{
 	},
 	domain::Stage,
 };
-use crate::domain::UsageIntent;
 
 pub struct WorkLane<'dev, Q: QueueHandle, B: Backend> {
 	pool: CommandPool<'dev, B>,

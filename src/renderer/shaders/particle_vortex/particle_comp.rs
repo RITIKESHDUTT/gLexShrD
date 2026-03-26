@@ -1,4 +1,3 @@
-
 use crate::lin_al::Vec3;
 use crate::renderer::prelude::*;
 use crate::renderer::shaders::ComputePush;
@@ -74,6 +73,7 @@ fn curl(p: Vec2, t: f32) -> Vec2 {
 	
 	vec2(n - s, -(e - w)) / (2.0 * eps)
 }
+
 // ── Compute Kernel ────────────────────────────────────────────────────────────
 #[compute_shader(workgroup = 512, helpers = [mod289_v3, mod289_v2, permute, snoise, curl])]
 fn particle_comp(
@@ -85,133 +85,109 @@ fn particle_comp(
 	let idx = gid.x as usize;
 	if idx >= params.count as usize { return; }
 	
-	let p: Vec4 = particles_in[idx];
-	let mut pos: Vec2 = p.xy();
-	let mut vel: Vec2 = p.zw();
+	// ── 2 vec4s per particle: position + velocity ──
+	let p0: Vec4 = particles_in[idx * 2];
+	let p1: Vec4 = particles_in[idx * 2 + 1];
+	let mut pos = vec3(p0.x, p0.y, p0.z);
+	let mut vel = vec3(p1.x, p1.y, p1.z);
 	
 	let time = (params.frame as f32) * 0.008;
 	
-	// ── Pulsing vortex strengths ─────────────────────────────────────────────
-	
+	// ── Pulsing vortex strengths (same) ──
 	let pulse0 = 0.8 + 0.4 * sin(time * 1.3);
 	let pulse1 = 0.6 + 0.3 * sin(time * 1.7 + 1.0);
 	let pulse2 = 0.5 + 0.3 * sin(time * 2.1 + 2.5);
 	
-	// ── Orbiting vortex centers ──────────────────────────────────────────────
-	
+	// ── Orbiting vortex centers — now in xy plane ──
 	let c0 = vec2(0.0, 0.0);
 	let c1 = vec2(cos(time * 0.7) * 0.35, sin(time * 0.7) * 0.35);
 	let c2 = vec2(cos(time * 0.5 + 2.1) * 0.3, sin(time * 0.5 + 2.1) * 0.3);
 	
-	let mut force = vec2(0.0, 0.0);
+	let mut force = vec3(0.0, 0.0, 0.0);
+	let pos_xy = vec2(pos.x, pos.y);
 	
-	// ── Vortex 0 ─────────────────────────────────────────────────────────────
-	
-	let delta0 = c0 - pos;
+	// ── Vortex 0 ──
+	let delta0 = c0 - pos_xy;
 	let dist0  = delta0.length() + 0.001;
-	
 	let dir0 = delta0 / dist0;
 	let tan0 = vec2(-dir0.y, dir0.x);
-	
 	let pull0  = pulse0 * 0.3 / (dist0 + 0.08);
 	let swirl0 = pulse0 * 0.9 / (dist0 * dist0 + 0.015);
 	let repel0 = -0.015 / (dist0 * dist0 * dist0 + 0.0005);
+	force.x += dir0.x * (pull0 + repel0) + tan0.x * swirl0;
+	force.y += dir0.y * (pull0 + repel0) + tan0.y * swirl0;
 	
-	force += dir0 * (pull0 + repel0) + tan0 * swirl0;
-	
-	// ── Vortex 1 ─────────────────────────────────────────────────────────────
-	
-	let delta1 = c1 - pos;
+	// ── Vortex 1 ──
+	let delta1 = c1 - pos_xy;
 	let dist1  = delta1.length() + 0.001;
-	
 	let dir1 = delta1 / dist1;
 	let tan1 = vec2(-dir1.y, dir1.x);
-	
 	let pull1  = pulse1 * 0.3 / (dist1 + 0.08);
 	let swirl1 = pulse1 * 0.9 / (dist1 * dist1 + 0.015);
 	let repel1 = -0.015 / (dist1 * dist1 * dist1 + 0.0005);
+	force.x += dir1.x * (pull1 + repel1) + tan1.x * swirl1;
+	force.y += dir1.y * (pull1 + repel1) + tan1.y * swirl1;
 	
-	force += dir1 * (pull1 + repel1) + tan1 * swirl1;
-	
-	// ── Vortex 2 ─────────────────────────────────────────────────────────────
-	
-	let delta2 = c2 - pos;
+	// ── Vortex 2 ──
+	let delta2 = c2 - pos_xy;
 	let dist2  = delta2.length() + 0.001;
-	
 	let dir2 = delta2 / dist2;
 	let tan2 = vec2(-dir2.y, dir2.x);
-	
 	let pull2  = pulse2 * 0.3 / (dist2 + 0.08);
 	let swirl2 = pulse2 * 0.9 / (dist2 * dist2 + 0.015);
 	let repel2 = -0.015 / (dist2 * dist2 * dist2 + 0.0005);
+	force.x += dir2.x * (pull2 + repel2) + tan2.x * swirl2;
+	force.y += dir2.y * (pull2 + repel2) + tan2.y * swirl2;
 	
-	force += dir2 * (pull2 + repel2) + tan2 * swirl2;
+	// ── Z-axis: disk gravity — pulls particles back to z=0 ──
+	force.z -= pos.z * 8.0;
 	
-	// ── Periodic radial burst ────────────────────────────────────────────────
-	
+	// ── Periodic radial burst (xy plane) ──
 	let burst_phase = sin(time * 2.0);
-	
 	if burst_phase > 0.95 {
-		let dist_center = pos.length() + 0.01;
-		let outward     = pos / dist_center;
-		
-		force += outward * 2.0 * (burst_phase - 0.95) * 20.0;
+		let dist_center = pos_xy.length() + 0.01;
+		let outward = pos_xy / dist_center;
+		let strength = (burst_phase - 0.95) * 40.0;
+		force.x += outward.x * strength;
+		force.y += outward.y * strength;
+		force.z += pos.z * strength * 0.5; // puff the disk during burst
 	}
 	
-	// ── Multi-octave curl noise ──────────────────────────────────────────────
-	
+	// ── Curl noise (xy plane) ──
 	let mut noise = vec2(0.0, 0.0);
+	noise += curl(pos_xy * 2.5,  time * 0.1) * 0.5;
+	noise += curl(pos_xy * 6.0,  time * 0.0) * 0.2;
+	noise += curl(pos_xy * 14.0, time * 200.5) * 0.08;
+	force.x += noise.x;
+	force.y += noise.y;
 	
-	noise += curl(pos * 2.5,  time * 0.4) * 0.5;
-	noise += curl(pos * 6.0,  time * 0.9) * 0.2;
-	noise += curl(pos * 14.0, time * 1.5) * 0.08;
+	let r = pos_xy.length() + 0.001;
+	let angle = atan2(pos.y, pos.x);
+	let spiral = vec2(
+		cos(angle + log(r) * 2.0),
+		sin(angle + log(r) * 2.0)
+	);
+	force.x += spiral.x * 0.1;
+	force.y += spiral.y * 0.3;
 	
-	// ── Rectangular boundary (prevents particles leaving NDC box) ────────────
 	
-	let bound = 0.85_f32;
-	let boundary_strength = 3.0_f32;
-	
-	if pos.x > bound {
-		force.x -= (pos.x - bound) * boundary_strength;
-	}
-	
-	if pos.x < -bound {
-		force.x -= (pos.x + bound) * boundary_strength;
-	}
-	
-	if pos.y > bound {
-		force.y -= (pos.y - bound) * boundary_strength;
-	}
-	
-	if pos.y < -bound {
-		force.y -= (pos.y + bound) * boundary_strength;
-	}
-	
-	// ── Integrate velocity ───────────────────────────────────────────────────
-	
-	vel += (force + noise) * params.dt;
-	
-	// ── Speed-dependent drag ─────────────────────────────────────────────────
+	// ── Integrate ──
+	vel += force * params.dt;
 	
 	let speed = vel.length();
-	let drag  = mix(0.997, 0.965, clamp(speed * 1.5, 0.0, 1.0));
-	
+	let drag = mix(0.997, 0.965, clamp(speed * 1.5, 0.0, 1.0));
 	vel *= drag;
 	
-	// ── Soft circular boundary ───────────────────────────────────────────────
+	// Extra z-damping — keep the disk thin
+	vel.z *= 0.99;
 	
-	let r = pos.length();
-	
-	if r > 0.95 {
-		vel -= pos * (r - 0.85) * 3.0 * params.dt;
-		vel *= 0.95;
-	}
-	
-	// ── Integrate position ───────────────────────────────────────────────────
+	let r = pos_xy.length() + 0.001;
+	let angle = atan2(pos.y, pos.x);
 	
 	pos += vel * params.dt;
 	
-	particles_out[idx] = vec4_2v(pos, vel);
+	particles_out[idx * 2]     = vec4(pos.x, pos.y, pos.z, 0.0);
+	particles_out[idx * 2 + 1] = vec4(vel.x, vel.y, vel.z, 0.0);
 }
 
 pub const COMP_SHADER: &str = PARTICLE_COMP_GLSL;

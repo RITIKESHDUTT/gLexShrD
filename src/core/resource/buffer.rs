@@ -63,6 +63,7 @@ pub struct Buffer<'dev, S, B: Backend> {
 	sub_allocator: Option<B::Allocation>,
 	logical_size: u64,
 	pub(crate) family: u32, // "Current Owner"
+	owned: bool,
 	_state: PhantomData<S>,
 }
 
@@ -70,24 +71,12 @@ impl<S, B: Backend> Buffer<'_, S, B> {
 	pub fn handle(&self) -> B::Buffer { self.handle }
 	pub fn size(&self) -> u64 { self.logical_size }
 	pub fn family(&self) -> u32 { self.family }
-	
-	/// Bridges the Buffer wrapper to the underlying Arena Allocation offset.
-	/// Without this, Descriptors and Viewports will always look at Byte 0.
-	// --- critical: descriptor offset ---
-	pub fn offset(&self) -> u64 {
-		self.sub_allocator
-			.as_ref()
-			.map(|a| a.memory_offset())
-			.unwrap_or(0)
-	}
+
+	pub fn offset(&self) -> u64 { 0 }
 	
 	// --- critical: descriptor range ---
-	pub fn range(&self) -> u64 {
-		self.sub_allocator
-			.as_ref()
-			.map(|a| a.size())
-			.unwrap_or(self.logical_size)
-	}
+	pub fn range(&self) -> u64 { self.logical_size }
+	
 	
 	// --- critical: memory handle (for debugging / binding validation) ---
 	pub fn memory(&self) -> Option<B::DeviceMemory> {
@@ -137,35 +126,21 @@ impl<'dev, S, B: Backend> Buffer<'dev, S, B>
 	}
 }
 
-// CHANGE: `allocate` no longer calls allocate_memory internally.
-// The caller (GpuContext) already holds a SubAllocation from the arena;
-// it passes it in here and Buffer binds the VkBuffer to it.
-// Old signature: (device, size, usage, memory_type_index, family)
-// New signature: (device, sub, usage, family)
 impl<'dev, B: Backend> Buffer<'dev, buf_state::Undefined, B>
-	where B::Allocation: Allocation<Memory = B::DeviceMemory, Buffer = B::Buffer>,
+	where B::Allocation: Allocation<Memory = B::DeviceMemory>,
 {
 	pub fn allocate(
 		device: &'dev B::Device,
+		handle: B::Buffer,
 		logical_size: u64,
 		sub_allocator: B::Allocation,
 		family: u32,
 	) -> Result<Self, B::Error> {
-		let handle = sub_allocator.buffer();
-		
-		Ok(Self {
-			device,
-			handle,
-			sub_allocator: Some(sub_allocator),
-			logical_size,
-			family,
-			_state: PhantomData,
-		})
+		Ok(Self { device, handle, sub_allocator: Some(sub_allocator), logical_size, owned: true, family, _state: PhantomData })
 	}
 }
-
-
-// ─────────────────────────────────────────────────────────────
+	
+	// ─────────────────────────────────────────────────────────────
 // Buffer state transitions (barriers happen outside render pass)
 // ─────────────────────────────────────────────────────────────
 
@@ -264,6 +239,7 @@ fn retype<'dev, Old, New, B: Backend>(b: Buffer<'dev, Old, B>) -> Buffer<'dev, N
 		sub_allocator: std::mem::take(&mut b.sub_allocator),
 		logical_size: b.logical_size,
 		family: b.family,
+		owned: b.owned,
 		_state: PhantomData,
 	}
 }
@@ -526,6 +502,7 @@ impl<'dev, B: Backend> Buffer<'dev, buf_state::TransferSrc, B>
 			sub_allocator: Some(sub_allocator),
 			logical_size,
 			family,
+			owned: true,
 			_state: PhantomData,
 		})
 	}
@@ -561,6 +538,7 @@ impl<'dev, S, B: Backend> Buffer<'dev, S, B> {
 			sub_allocator: None,
 			logical_size: size,
 			family,
+			owned: true,
 			_state: PhantomData,
 		}
 	}

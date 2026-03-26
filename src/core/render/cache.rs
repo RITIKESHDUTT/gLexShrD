@@ -56,9 +56,11 @@ impl BlendConfig {
 	pub fn opaque() -> Self {
 		Self {
 			enable: false,
-			src_color: BlendFactor::ONE, dst_color: BlendFactor::ZERO,
+			src_color: BlendFactor::ONE,
+			dst_color: BlendFactor::ZERO,
 			color_op: BlendOp::ADD,
-			src_alpha: BlendFactor::ONE, dst_alpha: BlendFactor::ZERO,
+			src_alpha: BlendFactor::ONE,
+			dst_alpha: BlendFactor::ZERO,
 			alpha_op: BlendOp::ADD,
 		}
 	}
@@ -95,8 +97,28 @@ impl BlendConfig {
 			alpha_op: BlendOp::ADD,
 		}
 	}
-	
-	
+	pub fn additive_preserve_alpha() -> Self {
+		Self {
+			enable: true,
+			src_color: BlendFactor::SRC_ALPHA,
+			dst_color: BlendFactor::ONE,
+			color_op: BlendOp::ADD,
+			src_alpha: BlendFactor::ZERO,   // don't write particle alpha
+			dst_alpha: BlendFactor::ONE,    // keep CSD's alpha
+			alpha_op: BlendOp::ADD,
+		}
+	}
+	pub fn additive_premul() -> Self {
+		Self {
+			enable: true,
+			src_color: BlendFactor::ONE,     // was SRC_ALPHA — now uses premultiplied color
+			dst_color: BlendFactor::ONE,
+			color_op: BlendOp::ADD,
+			src_alpha: BlendFactor::ZERO,    // don't add particle alpha to framebuffer
+			dst_alpha: BlendFactor::ONE,     // keep CSD's window alpha
+			alpha_op: BlendOp::ADD,
+		}
+	}
 }
 
 impl RasterConfig {

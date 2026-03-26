@@ -15,17 +15,18 @@ pub enum Lifetime { Unset, Submitted(u64) }
 
 #[derive(Debug, Clone, Copy)]
 pub struct FreeRequest {
-	pub block_idx:  u32,
-	pub node_idx:   u32,
-	pub generation: u32,
-	pub lifetime:   Lifetime,
+	pub block_idx:    u32,
+	pub node_idx:     u32,
+	pub generation:   u32,
+	pub lifetime:     Lifetime,
+	pub owned_buffer: u64,
 }
+
 
 // ── SubAllocation ─────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub struct SubAllocation<B: Backend> {
-	buffer: B::Buffer,
 	memory:       B::DeviceMemory,
 	offset:       u64,
 	size:         u64,
@@ -34,6 +35,7 @@ pub struct SubAllocation<B: Backend> {
 	generation:   u32,
 	arena_return: Arc<ReturnQueue<FreeRequest>>,
 	lifetime:     Lifetime,
+	owned_buffer: u64,
 }
 
 // SAFETY: B::DeviceMemory is an opaque handle with no interior mutability
@@ -43,7 +45,6 @@ unsafe impl<B: Backend> Send for SubAllocation<B> where B::DeviceMemory: Send {}
 
 impl<B: Backend> SubAllocation<B> {
 	pub(crate) fn new(
-		buffer:       B::Buffer,
 		memory:       B::DeviceMemory,
 		offset:       u64,
 		size:         u64,
@@ -61,12 +62,15 @@ impl<B: Backend> SubAllocation<B> {
               "SubAllocation::new"
           );
 		Self {
-			buffer, memory, offset, size,
+			memory, offset, size,
 			block_idx: Some(block_idx), node_idx, generation,
 			arena_return,
 			lifetime: Lifetime::Unset,
+			owned_buffer: 0,
 		}
 	}
+	
+	pub fn attach_buffer(&mut self, raw: u64) { self.owned_buffer = raw; }
 	
 	pub fn finalize_lifetime(&mut self, t: u64) {
 		debug_assert!(matches!(self.lifetime, Lifetime::Unset));
@@ -89,7 +93,6 @@ impl<B: Backend> SubAllocation<B> {
 	fn block_idx(&self) -> Option<u32> {
 		if self.block_idx == Some(u32::MAX) { None } else { Some(self.block_idx?) }
 	}
-	pub fn buffer(&self) -> B::Buffer {self.buffer}
 }
 
 impl<B: Backend> Drop for SubAllocation<B> {
@@ -122,6 +125,7 @@ impl<B: Backend> Drop for SubAllocation<B> {
 			node_idx:   self.node_idx,
 			generation: self.generation,
 			lifetime:   self.lifetime,
+			owned_buffer: self.owned_buffer,  // ← propagate actual handle
 		});
 	}
 }
@@ -130,7 +134,6 @@ impl<B: Backend> Drop for SubAllocation<B> {
 
 pub struct ArenaBlock<B: Backend> {
 	pub memory: B::DeviceMemory,
-	pub buffer: B::Buffer,
 	pub kind: ResourceKind,
 	pub free_list: FreeList,
 	pub live_allocations: u32,
@@ -150,7 +153,9 @@ pub struct ThreadArena<B: Backend> {
 	free_block_slots: Vec<u32>,
 	return_queue:     Arc<ReturnQueue<FreeRequest>>,
 	deferred_frees:   Vec<FreeRequest>,
-	pub pending_device_frees: Vec<(B::Buffer, B::DeviceMemory)>
+	pub pending_device_frees: Vec<(B::DeviceMemory)>,
+	pub pending_buffer_destroys: Vec<u64>,
+	
 }
 
 impl<B: Backend> ThreadArena<B>
@@ -165,6 +170,7 @@ impl<B: Backend> ThreadArena<B>
 			return_queue:         Arc::new(ReturnQueue::new()),
 			deferred_frees:       vec![],
 			pending_device_frees: vec![],
+			pending_buffer_destroys: vec![],
 		}
 	}
 	
@@ -207,7 +213,9 @@ impl<B: Backend> ThreadArena<B>
 						block.live_allocations =
 							block.live_allocations.saturating_sub(1);
 						applied += 1;
-						
+						if req.owned_buffer != 0 {
+							self.pending_buffer_destroys.push(req.owned_buffer);
+						}
 						trace!(
                               block_idx = req.block_idx,
                               node_idx = req.node_idx,
@@ -263,7 +271,7 @@ impl<B: Backend> ThreadArena<B>
                       ?dead.kind,
                       "Block fully empty — queued for vkFreeMemory"
                   );
-				self.pending_device_frees.push((dead.buffer, dead.memory));
+				self.pending_device_frees.push((dead.memory));
 				self.free_block_slots.push(idx as u32);
 				destroyed += 1;
 			}
@@ -321,7 +329,7 @@ impl<B: Backend> ThreadArena<B>
                       );
 					
 					return Some(SubAllocation::new(
-						block.buffer, block.memory, off, size,
+						block.memory, off, size,
 						i as u32, node_idx, generation,
 						Arc::clone(&self.return_queue),
 					));
@@ -341,13 +349,11 @@ impl<B: Backend> ThreadArena<B>
 	
 	pub fn inject_new_block(
 		&mut self,
-		buffer: B::Buffer,
 		mem:    B::DeviceMemory,
 		size:   u64,
 		kind:   ResourceKind,
 	) {
 		let new_block = ArenaBlock {
-			buffer,
 			memory: mem,
 			kind,
 			free_list: FreeList::new(size),
@@ -417,7 +423,6 @@ mod tests {
 	fn test_temporal_safety_gating() {
 		let mut arena = Arena::new();
 		arena.inject_new_block(
-			dummy_buf(1),
 			dummy_mem(1),
 			1024 * 1024,
 			ResourceKind::Buffer
@@ -445,7 +450,6 @@ mod tests {
 		let block_size = 1024;
 		
 		arena.inject_new_block(
-			dummy_buf(200),
 			dummy_mem(200),
 			block_size,
 			ResourceKind::Buffer
@@ -457,7 +461,6 @@ mod tests {
 		assert!(arena.blocks[0].block.is_none());
 		
 		arena.inject_new_block(
-			dummy_buf(200),
 			dummy_mem(200),
 			block_size,
 			ResourceKind::Buffer
@@ -471,6 +474,7 @@ mod tests {
 			node_idx:   0,
 			generation: 0, // stale
 			lifetime:   Lifetime::Submitted(1),
+			owned_buffer: 0,
 		});
 		
 		arena.reap(100);
@@ -490,7 +494,6 @@ mod tests {
 	fn test_contract_enforcement_panic() {
 		let mut arena = Arena::new();
 		arena.inject_new_block(
-			dummy_buf(1),
 			dummy_mem(1),
 			1024,
 			ResourceKind::Buffer
@@ -503,7 +506,6 @@ mod tests {
 	fn test_random_lifetimes() {
 		let mut arena = Arena::new();
 		arena.inject_new_block(
-			dummy_buf(1),
 			dummy_mem(1),
 			1024 * 1024,
 			ResourceKind::Buffer
@@ -530,7 +532,6 @@ mod tests {
 		for i in 0..4 {
 			let id = i as u64 + 1;
 			arena.inject_new_block(
-				dummy_buf(id),
 				dummy_mem(id),
 				2 * 1024 * 1024,
 				ResourceKind::Buffer
@@ -572,7 +573,6 @@ mod tests {
 			for i in 0..block_count {
 				let id = i as u64 + 1;
 				arena.inject_new_block(
-					dummy_buf(id),
 					dummy_mem(id),
 					2 * 1024 * 1024,
 					ResourceKind::Buffer
@@ -631,7 +631,6 @@ mod tests {
 	fn test_alignment_pathology() {
 		let mut arena = Arena::new();
 		arena.inject_new_block(
-			dummy_buf(1),
 			dummy_mem(1),
 			1024 * 1024,
 			ResourceKind::Buffer
@@ -655,7 +654,6 @@ mod tests {
 	fn test_fragmentation_pressure() {
 		let mut arena = Arena::new();
 		arena.inject_new_block(
-			dummy_buf(1),
 			dummy_mem(1),
 			1024 * 1024,
 			ResourceKind::Buffer
@@ -686,7 +684,6 @@ mod tests {
 		
 		if arena.blocks.iter().all(|s| s.block.is_none()) {
 			arena.inject_new_block(
-				dummy_buf(99),
 				dummy_mem(99),
 				1024 * 1024,
 				ResourceKind::Buffer
@@ -707,7 +704,6 @@ mod tests {
 	fn test_invariants_under_stress() {
 		let mut arena = Arena::new();
 		arena.inject_new_block(
-			dummy_buf(1),
 			dummy_mem(1),
 			1024 * 1024,
 			ResourceKind::Buffer
@@ -739,7 +735,6 @@ mod tests {
 	fn test_split_coalesce_worst_case() {
 		let mut arena = Arena::new();
 		arena.inject_new_block(
-			dummy_buf(1),
 			dummy_mem(1),
 			1024 * 1024,
 			ResourceKind::Buffer
@@ -773,7 +768,6 @@ mod tests {
 		
 		let mut arena = Arena::new();
 		arena.inject_new_block(
-			dummy_buf(1),
 			dummy_mem(1),
 			1024 * 1024,
 			ResourceKind::Buffer

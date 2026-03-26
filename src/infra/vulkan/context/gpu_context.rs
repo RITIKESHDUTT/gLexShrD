@@ -7,14 +7,14 @@ use crate::core::{Backend, DeviceOps};
 use crate::core::buf_state::Undefined;
 use crate::core::types::{BufferUsage, MemoryPropertyFlags};
 use crate::core::type_state_queue::{Graphics, Queue, Transfer};
-use crate::core::{Buffer, Executor, FrameSync, PresentSync, WorkLane};
+use crate::core::{Buffer, Executor, FrameSync, WorkLane};
 use crate::domain::ResourceKind;
 use crate::infra::vulkan::backend::{VulkanBackend, VulkanDevice};
 use crate::infra::vulkan::context::init::VulkanContext;
 use crate::infra::vulkan::memory::{AllocationError, GpuAllocator};
 use std::sync::Arc;
 use crate::core::types::ImageUsage;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace, };
 
 pub struct GpuContext<'dev, B: Backend> {
 	pub sync:      FrameSync<'dev, 3, VulkanBackend>,
@@ -67,55 +67,58 @@ impl<'dev> GpuContext<'dev, VulkanBackend> {
 	
 	pub fn staging_upload(
 		&self,
-		size:   u64,
+		size: u64,
 		family: u32,
 	) -> Result<Buffer<'dev, Undefined, VulkanBackend>, AllocationError> {
 		trace!(size, family, "staging_upload");
 		let usage = BufferUsage::STORAGE | BufferUsage::TRANSFER_SRC;
-		let sub   = self.sub_alloc(size, usage, MemoryPropertyFlags::HOST_VISIBLE |
+		let mut sub = self.sub_alloc(size, usage, MemoryPropertyFlags::HOST_VISIBLE |
 			MemoryPropertyFlags::HOST_COHERENT)?;
-		Buffer::allocate(self.device(), size, sub, family)
+		let handle = self.allocator.bind_buffer(&mut sub, size, usage)?;
+		Buffer::allocate(self.device(), handle, size, sub, family)
 			.map_err(AllocationError::DeviceOom)
 	}
-	
-	pub fn vertex_buffer(
+		
+		pub fn vertex_buffer(
 		&self,
-		size:   u64,
+		size: u64,
 		family: u32,
 	) -> Result<Buffer<'dev, Undefined, VulkanBackend>, AllocationError> {
 		trace!(size, family, "vertex_buffer");
 		let usage = BufferUsage::VERTEX | BufferUsage::TRANSFER_DST;
-		let sub   = self.sub_alloc(size, usage, MemoryPropertyFlags::DEVICE_LOCAL)?;
-		Buffer::allocate(self.device(), size, sub, family)
+		let mut sub = self.sub_alloc(size, usage, MemoryPropertyFlags::DEVICE_LOCAL)?;
+		let handle = self.allocator.bind_buffer(&mut sub, size, usage)?;
+		Buffer::allocate(self.device(), handle, size, sub, family)
 			.map_err(AllocationError::DeviceOom)
 	}
 	
 	pub fn storage_buffer(
 		&self,
-		size:   u64,
+		size: u64,
 		family: u32,
 	) -> Result<Buffer<'dev, Undefined, VulkanBackend>, AllocationError> {
 		trace!(size, family, "storage_buffer");
 		let usage = BufferUsage::STORAGE | BufferUsage::TRANSFER_DST;
-		let sub   = self.sub_alloc(size, usage, MemoryPropertyFlags::DEVICE_LOCAL)?;
-		Buffer::allocate(self.device(), size, sub, family)
+		let mut sub = self.sub_alloc(size, usage, MemoryPropertyFlags::DEVICE_LOCAL)?;
+		let handle = self.allocator.bind_buffer(&mut sub, size, usage)?;
+		Buffer::allocate(self.device(), handle, size, sub, family)
 			.map_err(AllocationError::DeviceOom)
 	}
 	
 	pub fn staging_from_slice<T: Copy>(
 		&self,
-		data:   &[T],
+		data: &[T],
 		family: u32,
 	) -> Result<Buffer<'dev, Undefined, VulkanBackend>, AllocationError> {
 		let size = (data.len() * std::mem::size_of::<T>()) as u64;
 		trace!(
-              elements = data.len(),
-              elem_size = std::mem::size_of::<T>(),
-              total_size = size,
-              family,
-              "staging_from_slice"
-          );
-		let buf  = self.staging_upload(size, family)?;
+			  elements = data.len(),
+			  elem_size = std::mem::size_of::<T>(),
+			  total_size = size,
+			  family,
+			  "staging_from_slice"
+		  );
+		let buf = self.staging_upload(size, family)?;
 		buf.with_mapped::<T, _, _>(data.len(), |dst| dst.copy_from_slice(data))
 		   .map_err(AllocationError::DeviceOom)?;
 		Ok(buf)
@@ -135,7 +138,7 @@ impl<'dev> GpuContext<'dev, VulkanBackend> {
 		self.sync.record_signal(signal_val);
 	}
 	
-	pub fn frame(&self)        -> u64   { self.sync.frame()        }
+	pub fn frame(&self) -> u64 { self.sync.frame() }
 	pub fn current_slot(&self) -> usize { self.sync.current_slot() }
 	
 	pub fn drain(&self) -> Result<(), <VulkanBackend as Backend>::Error> {
@@ -145,7 +148,7 @@ impl<'dev> GpuContext<'dev, VulkanBackend> {
 	
 	// ── Executor delegates ────────────────────────────────────────────────────
 	
-	pub fn executor(&self)     -> &Executor<'dev, VulkanBackend>     { &self.executor }
+	pub fn executor(&self) -> &Executor<'dev, VulkanBackend> { &self.executor }
 	pub fn executor_mut(&mut self) -> &mut Executor<'dev, VulkanBackend> { &mut self.executor }
 	
 	pub fn has_transfer(&self) -> bool { self.executor.has_transfer() }
@@ -193,9 +196,9 @@ impl<'dev> GpuContext<'dev, VulkanBackend> {
 	
 	fn sub_alloc(
 		&self,
-		size:   u64,
-		usage:  BufferUsage,
-		flags:  MemoryPropertyFlags,
+		size: u64,
+		usage: BufferUsage,
+		flags: MemoryPropertyFlags,
 	) -> Result<<VulkanBackend as Backend>::Allocation, AllocationError> {
 		trace!(size, ?flags, "sub_alloc — probing memory requirements");
 		
@@ -204,11 +207,11 @@ impl<'dev> GpuContext<'dev, VulkanBackend> {
 		self.device().destroy_buffer(tmp);
 		
 		trace!(
-              req_size = req.size,
-              req_align = req.alignment,
-              type_bits = req.memory_type_bits,
-              "sub_alloc — requirements probed, allocating"
-          );
+			  req_size = req.size,
+			  req_align = req.alignment,
+			  type_bits = req.memory_type_bits,
+			  "sub_alloc — requirements probed, allocating"
+		  );
 		
 		self.allocator.allocate(req, flags, ResourceKind::Buffer, self.timeline_completed())
 	}
@@ -220,15 +223,15 @@ impl<'dev> GpuContext<'dev, VulkanBackend> {
 		&self,
 		format: <VulkanBackend as Backend>::Format,
 		extent: Extent2D,
-		usage:  ImageUsage,
+		usage: ImageUsage,
 		family: u32,
 	) -> Result<Image<'dev, img_state::Undefined, VulkanBackend>, AllocationError> {
 		trace!(
-              width = extent.width(),
-              height = extent.height(),
-              family,
-              "allocate_image_2d — probing memory requirements"
-          );
+			  width = extent.width(),
+			  height = extent.height(),
+			  family,
+			  "allocate_image_2d — probing memory requirements"
+		  );
 		
 		let tmp = self.device()
 					  .create_image_2d(format, extent.width(), extent.height(), usage)
@@ -237,11 +240,11 @@ impl<'dev> GpuContext<'dev, VulkanBackend> {
 		self.device().destroy_image(tmp);
 		
 		trace!(
-              req_size = req.size,
-              req_align = req.alignment,
-              type_bits = req.memory_type_bits,
-              "allocate_image_2d — requirements probed, allocating"
-          );
+			  req_size = req.size,
+			  req_align = req.alignment,
+			  type_bits = req.memory_type_bits,
+			  "allocate_image_2d — requirements probed, allocating"
+		  );
 		
 		let sub = self.allocator.allocate(
 			req,

@@ -1,3 +1,14 @@
+use glex_platform::platform::{ElementState, Event};
+use glex_platform::platform::KeyCode;
+use glex_platform::platform::MouseButton;
+use glex_platform::platform::WindowEvent;
+use crate::engine::visual::Visual;
+use crate::core::Backend;
+use crate::core::types::{PushConstantRange, ShaderStages, };
+use crate::domain::UsageIntent;
+use crate::engine::evaluator::Evaluator;
+use std::collections::HashMap;
+use crate::core::PipelineId;
 use crate::core::PresentSync;
 use super::VulkanDevice;
 use super::context::{GpuContext, Presentation, Rendering, VulkanContext};
@@ -14,7 +25,9 @@ use crate::infra::vulkan::context::PresentMode;
 use crate::renderer::{CsdPass, TextSet};
 use glex_platform::platform::{ControlFlow, Extent2D, Window};
 use tracing::{debug, error, info, instrument, trace, warn};
-use glex_platform::csd::Color;
+use crate::engine::param::ParamLayout;
+use crate::engine::scene::{NodeId, Transform, Opacity};
+
 // =============================================================================
 // Pass trait
 // =============================================================================
@@ -63,6 +76,18 @@ impl FrameInfo {
         }
     }
 }
+pub trait VisualDriver {
+    fn record(
+        &self,
+        graph: &mut FrameGraph,
+        info: &FrameInfo,
+        world_tf: &Transform,
+        opacity: Opacity,
+        visual: &Visual,
+        node: NodeId,
+    );
+    fn retire(&mut self, timeline: u64);
+}
 
 
 // =============================================================================
@@ -70,13 +95,20 @@ impl FrameInfo {
 // =============================================================================
 
 pub struct Glex<'dev> {
-    vsync:        PresentMode,
-    rendering:    Rendering<'dev, TextSet>,
-    gpu:          GpuContext<'dev, VulkanBackend>,
-    presentation: Presentation<'dev>,
-    csd:          Option<CsdPass<'dev>>,
-    passes:       Vec<Box<dyn Pass<'dev> + 'dev>>,
+    _vsync:            PresentMode,
+    rendering:        Rendering<'dev, TextSet>,
+    gpu:              GpuContext<'dev, VulkanBackend>,
+    presentation:     Presentation<'dev>,
+    csd:              Option<CsdPass<'dev>>,
+    passes:           Vec<Box<dyn Pass<'dev> + 'dev>>,
+    // ── scene integration ──
+    scene:            Option<Evaluator>,
+    visual_drivers: HashMap<usize, Box<dyn VisualDriver + 'dev>>,
+    // ── interaction state ──
+    dragging: Option<(NodeId, f32, f32)>,  // (node, offset_x, offset_y)
+    cursor:   (f32, f32),
 }
+
 
 impl<'dev> Glex<'dev> {
     fn new(
@@ -92,13 +124,18 @@ impl<'dev> Glex<'dev> {
         debug!("Uploading Rendering resources");
         let rendering = Rendering::upload(&mut gpu, &presentation)?;
         debug!("Glex::new complete");
+        
         Ok(Self {
-            vsync: presentation.present_mode(),
+            _vsync: presentation.present_mode(),
             presentation,
             gpu,
             rendering,
-            csd:    None,
-            passes: Vec::new(),
+            csd:              None,
+            passes:           Vec::new(),
+            scene:            None,
+            visual_drivers: HashMap::new(),
+            dragging: None,
+            cursor:   (0.0, 0.0),
         })
     }
     
@@ -151,11 +188,12 @@ impl<'dev> Glex<'dev> {
         info!("Starting main rendering loop");
         
         loop {
-            let (cf, _) = window.pump();
+            let (cf, events) = window.pump();
             if matches!(cf, ControlFlow::Exit) {
                 info!("Glex control flow exit, shutting down");
                 break;
             }
+            self.handle_events(&events);
             
             let frame_id = self.gpu.frame();
             trace!(frame_id, "FRAME_BEGIN");
@@ -272,7 +310,7 @@ impl<'dev> Glex<'dev> {
             self.csd_mut().begin_frame(layout, is_fs, title, theme, state);
             
             let info = FrameInfo::from_layout(
-                Extent2D::new(swap_ext.width(), swap_ext.height()),
+                Extent2D::new(win_ext.width(), win_ext.height()),
                 self.gpu.frame() as u32,
                 is_fs,
                 layout,
@@ -282,10 +320,15 @@ impl<'dev> Glex<'dev> {
                 pass.update(self.gpu.frame() as u32);
             }
             
+            
             let mut graph = FrameGraph::new();
             // CSD background FIRST — rounded window body behind user content
             self.csd().record_background(&mut graph, &info);
             
+            // tick scene evaluator (advances animation clock)
+            if let Some(ev) = &mut self.scene { ev.tick(); }
+            // record scene visuals into frame graph via PassBuilder
+            self.record_scene(&mut graph, &info);
             
             // user passes draw inside the content area
             for pass in self.passes.iter() {
@@ -293,6 +336,7 @@ impl<'dev> Glex<'dev> {
             }
             // CSD foreground LAST — buttons on top of everything
             self.csd().record_foreground(&mut graph, &info);
+            
             
             
             // ── submit ──────────────────────────────────────────
@@ -305,10 +349,16 @@ impl<'dev> Glex<'dev> {
             let swap_img = SwapchainImage::from_raw(
                 ctx.device(), image, extent.into(),
             );
+            let clear_color = if is_fs {
+                let c = theme.window_bg;
+                [c.r(), c.g(), c.b(), 1.0]
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
+            };
             let target = RenderTarget {
                 color_view:  self.presentation.image_view(acq.image_index),
                 extent:      extent.into(),
-                clear_color: theme.window_bg.screen(Color::TRANSPARENT).to_array()
+                clear_color: clear_color
             };
             
             trace!(frame_id, "Executing frame graph");
@@ -395,6 +445,127 @@ impl<'dev> Glex<'dev> {
     ) -> DescriptorSetId {
         self.gpu.executor_mut().register_descriptor_set(handle)
     }
+    
+    pub fn set_scene(&mut self, evaluator: Evaluator) {
+        self.scene = Some(evaluator);
+    }
+    
+    pub fn scene(&self) -> Option<&Evaluator> {
+        self.scene.as_ref()
+    }
+    
+    pub fn scene_mut(&mut self) -> Option<&mut Evaluator> {
+        self.scene.as_mut()
+    }
+    
+    /// Register which pipeline renders a given ParamLayout.
+    /// Called once per visual type at setup. Layout pointer is the key.
+    pub fn register_driver(&mut self, layout: &'static ParamLayout, driver: impl VisualDriver + 'dev) {
+        self.visual_drivers.insert(layout as *const _ as usize, Box::new(driver));
+    }
+    
+    
+    fn record_scene(&self, graph: &mut FrameGraph, info: &FrameInfo) {
+        let evaluator = match &self.scene {
+            Some(e) => e,
+            None => return,
+        };
+        
+        let drivers = &self.visual_drivers;
+        
+        evaluator.scene().walk(|id, world_tf, visual, _paint, opacity| {
+            let key = match visual {
+                Visual::GpuFunc { params, .. }   => params.layout() as *const _ as usize,
+                Visual::Particles { params, .. } => params.layout() as *const _ as usize,
+                _ => return,
+            };
+            
+            let Some(driver) = drivers.get(&key) else {
+                debug_assert!(false, "No driver registered for ParamLayout at {key:#x}");
+                return;
+            };
+            
+            driver.record(graph, info, world_tf, opacity, visual, id);
+        });
+    }
+    
+    pub fn quad_buffer_info(&self) -> (u64, u64) {
+        let buf = &self.csd().resources.quad.quad_buf;
+        (VulkanBackend::buffer_handle(buf.handle()), buf.size())
+    }
+    fn hit_test_scene(&self, cx: f32, cy: f32) -> Option<NodeId> {
+        let ev = self.scene.as_ref()?;
+        let mut hit = None;
+        ev.scene().walk(|id, world_tf, visual, _paint, _opacity| {
+            let Visual::GpuFunc { extent, .. } = visual else { return };
+            let dx = cx - world_tf.position.x;
+            let dy = cy - world_tf.position.y;
+            let hw = extent.x * world_tf.scale.x * 0.5;
+            let hh = extent.y * world_tf.scale.y * 0.5;
+            if dx.abs() <= hw && dy.abs() <= hh {
+                hit = Some(id);  // last (topmost) wins
+            }
+        });
+        hit
+    }
+    
+    fn handle_events(&mut self, events: &[Event]) {
+        for event in events {
+            let Event::Window { event: we, .. } = event else { continue };
+            match we {
+                WindowEvent::KeyboardInput(ke) if ke.state.is_pressed() && !ke.repeat => {
+                    match ke.key {
+                        KeyCode::Space => {
+                            if let Some(ev) = &mut self.scene {
+                                if ev.is_paused() {
+                                    ev.resume();
+                                } else {
+                                    ev.pause();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                
+                WindowEvent::CursorMoved { x, y } => {
+                    self.cursor = (*x, *y);
+                    if let (Some((node_id, ox, oy)), Some(ev)) =
+                        (self.dragging, self.scene.as_mut())
+                    {
+                        let _ = ev.scene_mut().node(node_id).map(|mut n| {
+                            n.position(x - ox, y - oy);
+                        });
+                    }
+                }
+                
+                WindowEvent::MouseInput { button: MouseButton::Left, state } => {
+                    match state {
+                        ElementState::Pressed => {
+                            let (cx, cy) = self.cursor;
+                            if let Some(node_id) = self.hit_test_scene(cx, cy) {
+                                if let Some(ev) = &self.scene {
+                                    if let Ok(tf) = ev.scene().world_transform(node_id) {
+                                        self.dragging = Some((
+                                            node_id,
+                                            cx - tf.position.x,
+                                            cy - tf.position.y,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        ElementState::Released => {
+                            self.dragging = None;
+                        }
+                    }
+                }
+                
+                _ => {}
+            }
+        }
+    }
+    
 }
 
 // =============================================================================
@@ -412,9 +583,13 @@ impl<'dev> Drop for Glex<'dev> {
         if let Some(csd) = &mut self.csd {
             csd.finalize(completed);
         }
+        for driver in self.visual_drivers.values_mut() {
+            driver.retire(completed);
+        }
         
         self.passes.clear();
         self.csd = None;
+        self.visual_drivers.clear();
         
         self.gpu.tick_allocator();
         debug!("Glex Drop complete");

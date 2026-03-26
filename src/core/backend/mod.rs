@@ -8,7 +8,7 @@ use types::*;
 
 // ── Backend Trait ───────────────────────────────────────────
 pub trait Backend: 'static + Sized
-	where Self::Allocation: Allocation<Memory = Self::DeviceMemory, Buffer = Self::Buffer>,
+	where Self::Allocation: Allocation<Memory = Self::DeviceMemory>,
 {
 	type Device: DeviceOps<Self> + CommandOps<Self> + Clone;
 	type Buffer: Copy + Eq + Debug + Send + Default;
@@ -218,7 +218,6 @@ pub trait Allocation: Send {
 	type Memory: Copy + Debug + Send + Eq;
 	type Buffer: Copy + Debug + Eq;
 	fn memory(&self) -> Self::Memory;
-	fn buffer(&self) -> Self::Buffer;
 	fn finalize_lifetime(&mut self, t: u64);
 	// MEMORY SPACE
 	fn memory_offset(&self) -> u64;
@@ -226,8 +225,6 @@ pub trait Allocation: Send {
 	fn size(&self)   -> u64;
 	// INTERNAL (allocator only)
 	fn block_idx(&self) -> u32;
-	
-
 }
 
 

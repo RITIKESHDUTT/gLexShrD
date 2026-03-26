@@ -8,11 +8,11 @@
 //! ## Architecture
 //!
 //! ```text
-//!  ┌──────────────────────────────────────────────────────────────┐
-//!  │  GpuAllocator  (Arc, shared across threads)                  │
-//!  │  ├── BlockFactory  (trait — impl'd by VulkanDevice)          │
-//!  │  └── free_channel: Arc<ReturnQueue<DeviceMemory>>  (MPSC)    │
-//!  └──────────────────────────────────────────────────────────────┘
+//!  ┌──────────────────────────────────────────────────────────────────┐
+//!  │  GpuAllocator  (Arc, shared across threads)                      │
+//!  │  ├── BlockFactory  (trait — impl'd by VulkanDevice)              │
+//!  │  └── free_channel: Arc<ReturnQueue<DeviceMemory>>  (MPSC)        │
+//!  └──────────────────────────────────────────────────────────────────┘
 //!                              ▲
 //!   Thread A ──── LocalArena ──┤  push on reap()  (lock-free CAS)
 //!   Thread B ──── LocalArena ──┘
@@ -38,20 +38,23 @@
 //!
 //! ## BlockFactory and VulkanDevice
 //!
-//! `BlockFactory` is a narrow two-method trait (allocate / free one Vulkan
-//! block). It exists purely as a testability seam: `MockFactory` implements
+//! `BlockFactory` is a narrow trait (allocate/free memory blocks, bind/release
+//! buffers). It exists purely as a testability seam: `MockFactory` implements
 //! it in tests without needing a real device. In production, `VulkanDevice`
-//! implements `BlockFactory` directly — `allocate_memory` and `free_memory`
-//! are already present on `VulkanDevice` via `DeviceOps<VulkanBackend>`, so
-//! the impl is a one-line delegation per method with no duplicated logic.
+//! implements `BlockFactory` directly — `allocate_memory`, `free_memory`,
+//! `create_buffer`, `bind_buffer_memory`, and `destroy_buffer` are already
+//! present on `VulkanDevice` via `DeviceOps<VulkanBackend>`, so the impl is
+//! a one-line delegation per method with no duplicated logic.
 //!
 //! There is **no** separate `VulkanBlockFactory` wrapper struct. The
 //! `GpuAllocator::new` constructor takes `Arc<VulkanDevice>` directly.
 
 
+use ash::vk::Handle;
 use std::cell::RefCell;
 use std::sync::Arc;
 use crate::core::Backend;
+use crate::core::types::BufferUsage;
 use crate::domain::ResourceKind;
 use super::suballoc::{ThreadArena, SubAllocation};
 use super::return_q::ReturnQueue;
@@ -63,7 +66,7 @@ use tracing::{debug, info, trace, warn};
 // ── Block sizes ──────────────────────────────────────────────────────────────
 pub const DEFAULT_BUFFER_BLOCK_SIZE: u64 =  128 * 1024 * 1024;
 
-pub const DEFAULT_IMAGE_BLOCK_SIZE: u64 =  1024 * 1024 ;
+pub const DEFAULT_IMAGE_BLOCK_SIZE: u64 =  1024 * 1024;
 
 // ── Error ────────────────────────────────────────────────────────────────────
 
@@ -109,13 +112,24 @@ pub trait BlockFactory: Send + Sync {
 		&self,
 		size: u64,
 		memory_type_index: u32,
-	) -> Result<(<VulkanBackend as Backend>::Buffer, <VulkanBackend as Backend>::DeviceMemory, u64), <VulkanBackend as
-	Backend>::Error>;
+	) -> Result<(<VulkanBackend as Backend>::DeviceMemory, u64), <VulkanBackend as Backend>::Error>;
 	
 	fn free_block(
 		&self,
-		buffer: <VulkanBackend as Backend>::Buffer,
 		memory: <VulkanBackend as Backend>::DeviceMemory,
+	);
+	
+	fn bind_buffer(
+		&self,
+		memory: <VulkanBackend as Backend>::DeviceMemory,
+		offset: u64,
+		size: u64,
+		usage: BufferUsage,
+	) -> Result<(<VulkanBackend as Backend>::Buffer, u64), <VulkanBackend as Backend>::Error>;
+	
+	fn release_buffer(
+		&self,
+		buffer: <VulkanBackend as Backend>::Buffer,
 	);
 }
 
@@ -124,40 +138,35 @@ pub trait BlockFactory: Send + Sync {
 
 struct LocalArena {
 	arena:   ThreadArena<VulkanBackend>,
-	channel: Arc<
-		ReturnQueue<(
-			<VulkanBackend as Backend>::Buffer,
-			<VulkanBackend as Backend>::DeviceMemory
-		)>
-	>
+	mem_channel: Arc<ReturnQueue<<VulkanBackend as Backend>::DeviceMemory>>,
+	buf_channel: Arc<ReturnQueue<u64>>,
 }
 
 impl LocalArena {
 	fn new(
-		channel: Arc<
-			ReturnQueue<(
-				<VulkanBackend as Backend>::Buffer,
-				<VulkanBackend as Backend>::DeviceMemory
-			)>
-		>
+		mem_channel: Arc<ReturnQueue<<VulkanBackend as Backend>::DeviceMemory>>,
+		buf_channel: Arc<ReturnQueue<u64>>,
 	) -> Self {
 		trace!("LocalArena created for thread {:?}", std::thread::current().id());
-		Self { arena: ThreadArena::new(), channel }
+		Self { arena: ThreadArena::new(), mem_channel, buf_channel }
 	}
 	
 	fn reap(&mut self, gpu_t: u64) {
 		self.arena.reap(gpu_t);
+		for raw in self.arena.pending_buffer_destroys.drain(..) {
+			self.buf_channel.push(raw);
+		}
 		let freed_count = self.arena.pending_device_frees.len();
 		if freed_count > 0 {
 			debug!(
-                  gpu_t,
-                  freed_blocks = freed_count,
-                  thread = ?std::thread::current().id(),
-                  "LocalArena pushing emptied blocks to free channel"
-              );
+              gpu_t,
+              freed_blocks = freed_count,
+              thread = ?std::thread::current().id(),
+              "LocalArena pushing emptied blocks to free channel"
+          );
 		}
-		for (buffer, memory) in self.arena.pending_device_frees.drain(..) {
-			self.channel.push((buffer, memory));
+		for memory in self.arena.pending_device_frees.drain(..) {
+			self.mem_channel.push(memory);
 		}
 	}
 }
@@ -169,14 +178,16 @@ impl Drop for LocalArena {
               "LocalArena dropping — final reap"
           );
 		self.arena.reap(u64::MAX);
+		for raw in self.arena.pending_buffer_destroys.drain(..) {
+			self.buf_channel.push(raw);
+		}
 		let freed_count = self.arena.pending_device_frees.len();
 		if freed_count > 0 {
 			debug!(freed_blocks = freed_count, "Final reap freed blocks");
 		}
-		for mem in self.arena.pending_device_frees.drain(..) {
-			self.channel.push(mem);
+		for memory in self.arena.pending_device_frees.drain(..) {
+			self.mem_channel.push(memory);
 		}
-		
 		debug_assert!(
 			self.arena.return_queue_is_empty(),
 			"Thread exiting with live SubAllocations — Vulkan sub-allocations will be leaked"
@@ -184,11 +195,12 @@ impl Drop for LocalArena {
 	}
 }
 
+
 // ── Thread-local storage ─────────────────────────────────────────────────────
 
 thread_local! {
-      static THREAD_ARENA: RefCell<Option<LocalArena>> = const { RefCell::new(None) };
-  }
+        static THREAD_ARENA: RefCell<Option<LocalArena>> = const { RefCell::new(None) };
+}
 
 // ── GpuAllocator ─────────────────────────────────────────────────────────────
 
@@ -197,7 +209,8 @@ pub struct GpuAllocator {
 	memory_properties: ash::vk::PhysicalDeviceMemoryProperties,
 	buffer_block_size: u64,
 	image_block_size:  u64,
-	free_channel: Arc<ReturnQueue<(<VulkanBackend as Backend>::Buffer, <VulkanBackend as Backend>::DeviceMemory)>>,
+	free_channel: Arc<ReturnQueue<<VulkanBackend as Backend>::DeviceMemory>>,
+	buf_free_channel: Arc<ReturnQueue<u64>>,
 }
 
 impl GpuAllocator {
@@ -208,11 +221,11 @@ impl GpuAllocator {
 		memory_properties: ash::vk::PhysicalDeviceMemoryProperties,
 	) -> Arc<Self> {
 		info!(
-              buffer_block_size = DEFAULT_BUFFER_BLOCK_SIZE,
-              image_block_size = DEFAULT_IMAGE_BLOCK_SIZE,
-              memory_type_count = memory_properties.memory_type_count,
-              "GpuAllocator::new — creating with default block sizes"
-          );
+                buffer_block_size = DEFAULT_BUFFER_BLOCK_SIZE,
+                image_block_size = DEFAULT_IMAGE_BLOCK_SIZE,
+                memory_type_count = memory_properties.memory_type_count,
+                "GpuAllocator::new — creating with default block sizes"
+            );
 		Self::with_factory(
 			device,
 			memory_properties,
@@ -228,11 +241,11 @@ impl GpuAllocator {
 		image_block_size:  u64,
 	) -> Arc<Self> {
 		info!(
-              buffer_block_size,
-              image_block_size,
-              memory_type_count = memory_properties.memory_type_count,
-              "GpuAllocator::new_with_block_sizes"
-          );
+                buffer_block_size,
+                image_block_size,
+                memory_type_count = memory_properties.memory_type_count,
+                "GpuAllocator::new_with_block_sizes"
+            );
 		Self::with_factory(device, memory_properties, buffer_block_size, image_block_size)
 	}
 	
@@ -243,16 +256,18 @@ impl GpuAllocator {
 		image_block_size:  u64,
 	) -> Arc<Self> {
 		debug!(
-              buffer_block_size,
-              image_block_size,
-              "GpuAllocator::with_factory"
-          );
+                buffer_block_size,
+                image_block_size,
+                "GpuAllocator::with_factory"
+            );
 		Arc::new(Self {
 			factory,
 			memory_properties,
 			buffer_block_size,
 			image_block_size,
-			free_channel: Arc::new(ReturnQueue::new()),
+			free_channel:     Arc::new(ReturnQueue::new()),
+			buf_free_channel: Arc::new(ReturnQueue::new()),
+			
 		})
 	}
 	
@@ -266,22 +281,22 @@ impl GpuAllocator {
 		gpu_t:          u64,
 	) -> Result<SubAllocation<VulkanBackend>, AllocationError> {
 		trace!(
-              size = requirements.size,
-              alignment = requirements.alignment,
-              type_bits = requirements.memory_type_bits,
-              ?kind,
-              gpu_t,
-              "GpuAllocator::allocate — looking up memory type"
-          );
+                size = requirements.size,
+                alignment = requirements.alignment,
+                type_bits = requirements.memory_type_bits,
+                ?kind,
+                gpu_t,
+                "GpuAllocator::allocate — looking up memory type"
+            );
 		
 		let memory_type_index = self
 			.find_memory_type(requirements.memory_type_bits, property_flags)
 			.ok_or_else(|| {
 				warn!(
-                      type_bits = requirements.memory_type_bits,
-                      ?property_flags,
-                      "No suitable memory type found"
-                  );
+                        type_bits = requirements.memory_type_bits,
+                        ?property_flags,
+                        "No suitable memory type found"
+                    );
 				AllocationError::NoSuitableMemoryType
 			})?;
 		
@@ -307,23 +322,23 @@ impl GpuAllocator {
 		let block_size = self.block_size_for(kind);
 		
 		trace!(
-              size,
-              align,
-              memory_type_index,
-              ?kind,
-              gpu_t,
-              block_size,
-              "GpuAllocator::allocate_raw"
-          );
+                size,
+                align,
+                memory_type_index,
+                ?kind,
+                gpu_t,
+                block_size,
+                "GpuAllocator::allocate_raw"
+            );
 		
 		// Spec principle 13: dedicated allocation for oversized requests.
 		if size > block_size {
 			warn!(
-                  size,
-                  block_size,
-                  ?kind,
-                  "Allocation too large for arena"
-              );
+                    size,
+                    block_size,
+                    ?kind,
+                    "Allocation too large for arena"
+                );
 			return Err(AllocationError::TooLargeForArena { size, block_size });
 		}
 		
@@ -345,44 +360,44 @@ impl GpuAllocator {
 		});
 		if let Some(sub) = fast {
 			trace!(
-                  size,
-                  align,
-                  ?kind,
-                  "Fast path — allocated from existing block"
-              );
+                    size,
+                    align,
+                    ?kind,
+                    "Fast path — allocated from existing block"
+                );
 			return Ok(sub);
 		}
 		
 		// ── Slow path: request a new Vulkan block ─────────────────────────
 		debug!(
-              block_size,
-              memory_type_index,
-              ?kind,
-              thread = ?std::thread::current().id(),
-              "Slow path — requesting new Vulkan block (vkAllocateMemory)"
-          );
+                block_size,
+                memory_type_index,
+                ?kind,
+                thread = ?std::thread::current().id(),
+                "Slow path — requesting new Vulkan block (vkAllocateMemory)"
+            );
 		
 		let t0 = std::time::Instant::now();
-		let (buffer, mem, actual_size) = self
+		let (mem, actual_size) = self
 			.factory
 			.allocate_block(block_size, memory_type_index)
 			.map_err(|e| {
 				warn!(
-                      block_size,
-                      memory_type_index,
-                      error = ?e,
-                      "vkAllocateMemory failed"
-                  );
+                        block_size,
+                        memory_type_index,
+                        error = ?e,
+                        "vkAllocateMemory failed"
+                    );
 				AllocationError::DeviceOom(e)
 			})?;
 		let alloc_ms = t0.elapsed().as_millis();
 		
 		debug!(
-              actual_size,
-              alloc_ms,
-              ?kind,
-              "New Vulkan block allocated"
-          );
+                actual_size,
+                alloc_ms,
+                ?kind,
+                "New Vulkan block allocated"
+            );
 		if alloc_ms > 5 {
 			warn!(alloc_ms, block_size, "SLOW vkAllocateMemory");
 		}
@@ -392,7 +407,7 @@ impl GpuAllocator {
 				.as_mut()
 				.unwrap()
 				.arena
-				.inject_new_block(buffer, mem, actual_size, kind);
+				.inject_new_block(mem, actual_size, kind);
 		});
 		
 		// Retry. No reap between inject and allocate — calling reap here would
@@ -412,17 +427,39 @@ impl GpuAllocator {
 			}
 			None => {
 				warn!(
-                      size,
-                      align,
-                      block_size,
-                      ?kind,
-                      "Slow path retry failed — OOM after fresh block inject"
-                  );
+                        size,
+                        align,
+                        block_size,
+                        ?kind,
+                        "Slow path retry failed — OOM after fresh block inject"
+                    );
 				Err(AllocationError::DeviceOom(
 					<VulkanBackend as Backend>::Error::ERROR_OUT_OF_DEVICE_MEMORY,
 				))
 			}
 		}
+	}
+	
+	/// Bind a per-resource VkBuffer to the given sub-allocation's memory region.
+	/// Returns the VkBuffer handle. Caller owns destruction via `release_buffer`.
+	pub fn bind_buffer(
+		&self,
+		sub: &mut SubAllocation<VulkanBackend>,
+		size: u64,
+		usage: BufferUsage,
+	) -> Result<<VulkanBackend as Backend>::Buffer, AllocationError> {
+		let (buffer, _actual) =
+			self.factory
+				.bind_buffer(sub.memory(), sub.offset(), size, usage)
+				.map_err(AllocationError::DeviceOom)?;
+		sub.attach_buffer(buffer.as_raw());
+		Ok(buffer)
+	}
+	
+	/// Destroy a per-resource VkBuffer. Does not free the underlying memory —
+	/// that happens when the SubAllocation drops and the arena reaps the block.
+	pub fn release_buffer(&self, buffer: <VulkanBackend as Backend>::Buffer) {
+		self.factory.release_buffer(buffer);
 	}
 	
 	pub fn reap(&self, gpu_t: u64) {
@@ -434,14 +471,25 @@ impl GpuAllocator {
 	}
 	
 	pub fn flush_device_frees(&self) {
+		// ── Phase 1: destroy per-resource VkBuffers ──────────────────────
+		let buf_drained: Vec<_> = self.buf_free_channel.drain().collect();
+		if !buf_drained.is_empty() {
+			debug!(count = buf_drained.len(), "flush — destroying deferred VkBuffers");
+		}
+		for raw in buf_drained {
+			let buffer = <VulkanBackend as Backend>::Buffer::from_raw(raw);
+			self.factory.release_buffer(buffer);
+		}
+		
+		// ── Phase 2: free VkDeviceMemory blocks ──────────────────────────
 		let drained: Vec<_> = self.free_channel.drain().collect();
 		let count = drained.len();
 		if count > 0 {
-			debug!(count, "flush_device_frees — calling vkFreeMemory");
+			debug!(count, "flush — calling vkFreeMemory");
 		}
 		let t0 = std::time::Instant::now();
-		for (buffer, memory) in drained {
-			self.factory.free_block(buffer, memory);
+		for memory in drained {
+			self.factory.free_block(memory);
 		}
 		if count > 0 {
 			let free_ms = t0.elapsed().as_millis();
@@ -463,11 +511,11 @@ impl GpuAllocator {
 				&& mt.property_flags.contains(required_flags.into())
 		});
 		trace!(
-              type_filter,
-              ?required_flags,
-              result = ?result,
-              "find_memory_type"
-          );
+                type_filter,
+                ?required_flags,
+                result = ?result,
+                "find_memory_type"
+            );
 		result
 	}
 	
@@ -490,15 +538,16 @@ impl GpuAllocator {
 	}
 	
 	fn ensure_thread_arena(&self) {
-		let channel = Arc::clone(&self.free_channel);
+		let mem_ch = Arc::clone(&self.free_channel);
+		let buf_ch = Arc::clone(&self.buf_free_channel);
 		THREAD_ARENA.with(move |cell| {
 			let mut guard = cell.borrow_mut();
 			if guard.is_none() {
 				debug!(
-                      thread = ?std::thread::current().id(),
-                      "Initializing thread-local arena"
-                  );
-				*guard = Some(LocalArena::new(channel));
+                  thread = ?std::thread::current().id(),
+                  "Initializing thread-local arena"
+              );
+				*guard = Some(LocalArena::new(mem_ch, buf_ch));
 			}
 		});
 	}
@@ -516,17 +565,21 @@ mod tests {
 	// ── MockFactory ───────────────────────────────────────────────────────
 	
 	struct MockFactory {
-		next_id:     AtomicU64,
+		next_id: AtomicU64,
 		freed_count: AtomicU64,
-		inject_oom:  AtomicBool,
+		buffer_count: AtomicU64,
+		released_count: AtomicU64,
+		inject_oom: AtomicBool,
 	}
 	
 	impl MockFactory {
 		fn new() -> Arc<Self> {
 			Arc::new(Self {
-				next_id:     AtomicU64::new(1),
+				next_id: AtomicU64::new(1),
 				freed_count: AtomicU64::new(0),
-				inject_oom:  AtomicBool::new(false),
+				buffer_count: AtomicU64::new(0),
+				released_count: AtomicU64::new(0),
+				inject_oom: AtomicBool::new(false),
 			})
 		}
 	}
@@ -537,31 +590,45 @@ mod tests {
 			size: u64,
 			_memory_type_index: u32,
 		) -> Result<
-			(
-				<VulkanBackend as Backend>::Buffer,
-				<VulkanBackend as Backend>::DeviceMemory,
-				u64
-			),
+			(<VulkanBackend as Backend>::DeviceMemory, u64),
 			<VulkanBackend as Backend>::Error
 		> {
 			if self.inject_oom.load(Ordering::Relaxed) {
 				return Err(<VulkanBackend as Backend>::Error::ERROR_OUT_OF_DEVICE_MEMORY);
 			}
-			
 			let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-			
-			let buffer = <VulkanBackend as Backend>::Buffer::from_raw(id);
-			let memory = <VulkanBackend as Backend>::DeviceMemory::from_raw(id + 1);
-			
-			Ok((buffer, memory, size))
+			let memory = <VulkanBackend as Backend>::DeviceMemory::from_raw(id);
+			Ok((memory, size))
 		}
 		
 		fn free_block(
 			&self,
-			_buffer: <VulkanBackend as Backend>::Buffer,
 			_memory: <VulkanBackend as Backend>::DeviceMemory,
 		) {
 			self.freed_count.fetch_add(1, Ordering::Relaxed);
+		}
+		
+		fn bind_buffer(
+			&self,
+			_memory: <VulkanBackend as Backend>::DeviceMemory,
+			_offset: u64,
+			_size: u64,
+			_usage: BufferUsage,
+		) -> Result<
+			(<VulkanBackend as Backend>::Buffer, u64),
+			<VulkanBackend as Backend>::Error
+		> {
+			let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+			let buffer = <VulkanBackend as Backend>::Buffer::from_raw(id);
+			self.buffer_count.fetch_add(1, Ordering::Relaxed);
+			Ok((buffer, _size))
+		}
+		
+		fn release_buffer(
+			&self,
+			_buffer: <VulkanBackend as Backend>::Buffer,
+		) {
+			self.released_count.fetch_add(1, Ordering::Relaxed);
 		}
 	}
 	
@@ -577,7 +644,6 @@ mod tests {
 	}
 	
 	// ── Basic lifecycle ───────────────────────────────────────────────────
-	
 	#[test]
 	fn test_basic_allocate_reap_flush() {
 		let (alloc, factory) = test_allocator(1024 * 1024);
@@ -654,13 +720,12 @@ mod tests {
 		let (alloc, _) = test_allocator(1024);
 		let err = alloc.allocate_raw(2048, 1, 0, ResourceKind::Buffer, 0).unwrap_err();
 		assert!(matches!(
-              err,
-              AllocationError::TooLargeForArena { size: 2048, block_size: 1024 }
-          ));
+				err,
+				AllocationError::TooLargeForArena { size: 2048, block_size: 1024 }
+			));
 	}
 	
 	// ── Thread-local isolation ────────────────────────────────────────────
-	
 	#[test]
 	fn test_thread_local_isolation() {
 		let (alloc, factory) = test_allocator(512 * 1024);
@@ -715,7 +780,7 @@ mod tests {
 	
 	#[test]
 	fn test_concurrent_alloc_n_threads() {
-		const THREADS:     usize = 8;
+		const THREADS: usize = 8;
 		const ALLOCS_EACH: usize = 200;
 		
 		let (alloc, factory) = test_allocator(512 * 1024);
@@ -738,13 +803,12 @@ mod tests {
 		assert!(alloc.pending_device_frees_is_empty());
 		
 		let allocated = factory.next_id.load(Ordering::Relaxed) - 1;
-		let freed     = factory.freed_count.load(Ordering::Relaxed);
+		let freed = factory.freed_count.load(Ordering::Relaxed);
 		assert_eq!(allocated, freed,
 				   "Every allocated block must be returned: allocated={allocated} freed={freed}");
 	}
 	
 	// ── Free channel correctness ──────────────────────────────────────────
-	
 	#[test]
 	fn test_flush_is_idempotent() {
 		let (alloc, factory) = test_allocator(1024 * 1024);
@@ -780,7 +844,6 @@ mod tests {
 	}
 	
 	// ── Memory type lookup ────────────────────────────────────────────────
-	
 	#[test]
 	fn test_find_memory_type() {
 		let mut props = ash::vk::PhysicalDeviceMemoryProperties::default();
@@ -809,13 +872,12 @@ mod tests {
 	}
 	
 	// ── Buffer vs Image isolation ─────────────────────────────────────────
-	
 	#[test]
 	fn test_buffer_image_block_isolation() {
 		let (alloc, factory) = test_allocator(512 * 1024);
 		
 		let mut buf = alloc.allocate_raw(1024, 16, 0, ResourceKind::Buffer, 0).unwrap();
-		let mut img = alloc.allocate_raw(1024, 16, 0, ResourceKind::Image,  0).unwrap();
+		let mut img = alloc.allocate_raw(1024, 16, 0, ResourceKind::Image, 0).unwrap();
 		
 		assert_eq!(factory.next_id.load(Ordering::Relaxed), 3,
 				   "Buffer and Image must use separate blocks");
@@ -827,5 +889,27 @@ mod tests {
 		alloc.reap(1);
 		alloc.flush_device_frees();
 		assert_eq!(factory.freed_count.load(Ordering::Relaxed), 2);
+	}
+	
+	// ── bind_buffer / release_buffer ──────────────────────────────────────
+	#[test]
+	fn test_bind_release_buffer() {
+		let (alloc, factory) = test_allocator(1024 * 1024);
+		
+		let mut sub = alloc.allocate_raw(256, 16, 0, ResourceKind::Buffer, 0).unwrap();
+		
+		let buffer = alloc.bind_buffer(&mut  sub, 256, BufferUsage::STORAGE | BufferUsage::TRANSFER_DST)
+						  .expect("bind_buffer must succeed");
+		
+		assert_eq!(factory.buffer_count.load(Ordering::Relaxed), 1);
+		
+		alloc.release_buffer(buffer);
+		assert_eq!(factory.released_count.load(Ordering::Relaxed), 1);
+		
+		let mut sub = sub;
+		sub.finalize_lifetime(1);
+		drop(sub);
+		alloc.reap(1);
+		alloc.flush_device_frees();
 	}
 }

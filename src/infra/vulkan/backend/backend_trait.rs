@@ -941,36 +941,23 @@ impl From<vk::Result> for BackendError {
 /// `allocate_memory` and `free_memory` are already implemented on
 /// `VulkanDevice` via `DeviceOps<VulkanBackend>`.
 impl BlockFactory for <VulkanBackend as Backend>::Device {
-	fn allocate_block(
-		&self,
-		size: u64,
-		memory_type_index: u32,
-	) -> Result<(vk::Buffer, vk::DeviceMemory, u64), vk::Result> {
-		// Delegates to DeviceOps::allocate_memory which calls vkAllocateMemory.
-		let buffer = self.create_buffer(
-			size,
-			BufferUsage::STORAGE
-				| BufferUsage::VERTEX
-				| BufferUsage::TRANSFER_DST
-				| BufferUsage::TRANSFER_SRC,
-		)?;
-		
-		let req = self.get_buffer_memory_requirements(buffer);
-		
-		let memory = self.allocate_memory(req.size, memory_type_index)?;
-		
-		self.bind_buffer_memory(buffer, memory, 0)?;
-		
-		Ok((buffer, memory, req.size))
+	fn allocate_block(&self, size: u64, memory_type_index: u32,
+	) -> Result<(vk::DeviceMemory, u64), vk::Result> {
+		let memory = self.allocate_memory(size, memory_type_index)?;
+		Ok((memory, size))
 	}
-	
-	fn free_block(&self, buffer: vk::Buffer, memory: vk::DeviceMemory) {
-		// Delegates to DeviceOps::free_memory which calls vkFreeMemory.
-		// SAFETY: The caller (flush_device_frees) only passes handles that
-		// reap() has confirmed are fully empty (live_allocations == 0) and
-		// no longer referenced by any SubAllocation.
-		self.destroy_buffer(buffer);
+	fn free_block(&self, memory: vk::DeviceMemory) {
 		self.free_memory(memory);
+	}
+	fn bind_buffer(&self, memory: vk::DeviceMemory, offset: u64, size: u64, usage: BufferUsage,
+	) -> Result<(vk::Buffer, u64), vk::Result> {
+		let buffer = self.create_buffer(size, usage)?;
+		let req = self.get_buffer_memory_requirements(buffer);
+		self.bind_buffer_memory(buffer, memory, offset)?;
+		Ok((buffer, req.size))
+	}
+	fn release_buffer(&self, buffer: vk::Buffer) {
+		self.destroy_buffer(buffer);
 	}
 }
 
@@ -978,7 +965,6 @@ impl BlockFactory for <VulkanBackend as Backend>::Device {
 impl<B: Backend> Allocation for SubAllocation<B>
 	where
 		B::DeviceMemory: Copy + Debug + Send + Eq,
-		B::Buffer: Copy + Debug + Eq,
 {
 	type Memory = B::DeviceMemory;
 	type Buffer = B::Buffer;
@@ -990,9 +976,4 @@ impl<B: Backend> Allocation for SubAllocation<B>
 	fn memory_offset(&self) -> u64 { self.offset() }
 	fn size(&self)   -> u64 { self.size()   }
 	fn block_idx(&self) -> u32 { self.block_idx() }
-	
-	fn buffer(&self) -> Self::Buffer {
-		self.buffer()
-	}
-
 }
