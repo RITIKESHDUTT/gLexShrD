@@ -1,4 +1,4 @@
-use crate::core::types::Offset2D;
+use crate::core::types::{Offset2D, Extent3D};
 use crate::domain::DescriptorSetId;
 use crate::core::types::IndexType;
 use {
@@ -45,6 +45,7 @@ pub struct RenderTarget<'a, B: Backend> {
 	pub clear_color: [f32; 4],
 }
 
+#[derive(Debug)]
 pub struct PresentSync<B: Backend> {
 	pub wait_acquire: B::Semaphore,
 	pub signal_render_finished: B::Semaphore,
@@ -95,7 +96,7 @@ fn collect_barriers<B: Backend>(
 	
 	for b in barriers {
 		match side {
-			BarrierSide::Acquire if b.to_pass   != pass_id => continue,
+			BarrierSide::Acquire if b.to_pass != pass_id => continue,
 			BarrierSide::Release if b.from_pass != pass_id => continue,
 			_ => {}
 		}
@@ -107,14 +108,15 @@ fn collect_barriers<B: Backend>(
 			continue;
 		}
 		
-		let res = resources
-			.iter()
-			.find(|r| r.id == resolved.resource)
-			.expect("resource missing");
+		let res = resources.iter().find(|r| r.id == resolved.resource).expect("resource missing");
 		
 		match res.handle {
-			ResourceHandle::Image(raw) => {
-				let mut bar = build_image_barrier::<B>(&resolved, B::image_from_raw(raw));
+			ResourceHandle::Image { raw, .. } => {
+				let mut bar = build_image_barrier::<B>(
+					&resolved,
+					B::image_from_raw(raw),
+				);
+				
 				match side {
 					BarrierSide::Acquire if is_cross => {
 						bar.src_stage = Stage::None;
@@ -126,10 +128,16 @@ fn collect_barriers<B: Backend>(
 					}
 					_ => {}
 				}
+				
 				imgs.push(bar);
 			}
-			ResourceHandle::Buffer(raw) => {
-				let mut bar = build_buffer_barrier::<B>(&resolved, B::buffer_from_raw(raw));
+			
+			ResourceHandle::Buffer { raw, .. } => {
+				let mut bar = build_buffer_barrier::<B>(
+					&resolved,
+					B::buffer_from_raw(raw),
+				);
+				
 				match side {
 					BarrierSide::Acquire if is_cross => {
 						bar.src_stage = Stage::None.into();
@@ -141,6 +149,7 @@ fn collect_barriers<B: Backend>(
 					}
 					_ => {}
 				}
+				
 				bufs.push(bar);
 			}
 		}
@@ -154,7 +163,7 @@ fn present_sync_submits<B: Backend>(
 	is_first: bool,
 	is_last: bool,
 ) -> (Vec<SemaphoreSubmit<B>>, Vec<SemaphoreSubmit<B>>) {
-	let mut waits   = Vec::new();
+	let mut waits = Vec::new();
 	let mut signals = Vec::new();
 	
 	if let Some(ps) = sync {
@@ -176,22 +185,46 @@ fn present_sync_submits<B: Backend>(
 	
 	(waits, signals)
 }
-
-fn resolve_buffer<B: Backend>(resources: &[ResourceDecl], id: u32) -> B::Buffer {
-	let res = resources.iter().find(|r| r.id == id).expect("resource not found");
+fn merge_stage(a: Stage, b: Stage) -> Stage {
+	if a == b { a } else { b }
+}
+fn resolve_buffer<B: Backend>(
+	resources: &[ResourceDecl],
+	id: u32,
+) -> (B::Buffer, u64) {
+	let res = resources.iter()
+					   .find(|r| r.id == id)
+					   .expect("resource not found");
+	
 	match res.handle {
-		ResourceHandle::Buffer(raw) => B::buffer_from_raw(raw),
-		_ => panic!("expected buffer resource for ResourceId {}", id),
+		ResourceHandle::Buffer { raw, offset, .. } => {
+			(B::buffer_from_raw(raw), offset)
+		}
+		_ => panic!("expected buffer"),
 	}
 }
-
+fn resolve_image<B: Backend>(
+	resources: &[ResourceDecl],
+	id: u32,
+) -> (B::Image, Extent3D) {
+	let res = resources.iter()
+					   .find(|r| r.id == id)
+					   .expect("resource not found");
+	
+	match res.handle {
+		ResourceHandle::Image { raw, extent } => {
+			(B::image_from_raw(raw), extent)
+		}
+		_ => panic!("expected image"),
+	}
+}
 impl<'dev, B: Backend> Executor<'dev, B> {
 	pub fn new(device: &'dev B::Device) -> Self {
 		Self {
 			device,
-			graphics:       None,
-			compute:        None,
-			transfer:       None,
+			graphics: None,
+			compute: None,
+			transfer: None,
 			descriptor_sets: Vec::new(),
 		}
 	}
@@ -232,12 +265,12 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 		self.transfer.as_mut().expect("no transfer lane")
 	}
 	pub fn has_transfer(&self) -> bool { self.transfer.is_some() }
-	pub fn has_compute(&self)  -> bool { self.compute.is_some()  }
+	pub fn has_compute(&self) -> bool { self.compute.is_some() }
 	
 	fn timeline_handle_for(&self, domain: PassDomain) -> B::Semaphore {
 		match domain {
 			PassDomain::Graphics => self.graphics_lane().timeline_handle(),
-			PassDomain::Compute  => self.compute_lane().timeline_handle(),
+			PassDomain::Compute => self.compute_lane().timeline_handle(),
 			PassDomain::Transfer => self.transfer_lane().timeline_handle(),
 		}
 	}
@@ -245,7 +278,7 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 	fn family_for(&self, domain: PassDomain) -> u32 {
 		match domain {
 			PassDomain::Graphics => self.graphics_lane().family(),
-			PassDomain::Compute  => self.compute_lane().family(),
+			PassDomain::Compute => self.compute_lane().family(),
 			PassDomain::Transfer => self.transfer_lane().family(),
 		}
 	}
@@ -273,24 +306,29 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 		present_sync: Option<PresentSync<B>>,
 	) -> Result<u64, GraphError> {
 		let compiled = graph.compile()?;
-		
+		for pass in &compiled.passes {
+			match pass.domain {
+				PassDomain::Compute if self.compute.is_none() => {
+					return Err(GraphError::MissingLane(pass.domain));
+				}
+				PassDomain::Transfer if self.transfer.is_none() => {
+					return Err(GraphError::MissingLane(pass.domain));
+				}
+				_ => {}
+			}
+		}
 		let ExecutionOrder { ordered_passes, barriers } = compiled.order;
-		let mut passes: HashMap<PassId, CompiledPass> =
-			compiled.passes.into_iter().map(|p| (p.id, p)).collect();
-		let resources        = compiled.resources;
-		let descriptor_sets  = &self.descriptor_sets;
+		let mut passes: HashMap<PassId, CompiledPass> = compiled.passes.into_iter().map(|p| (p.id, p)).collect();
+		let resources = compiled.resources;
+		let descriptor_sets = &self.descriptor_sets;
 		let mut final_graphics_val: u64 = 0;
 		
-		let mut swap_img:  Option<SwapchainImage<'dev, img_state::Undefined, B>>        = Some(swap_img);
-		let mut color_img: Option<SwapchainImage<'dev, img_state::ColorAttachment, B>>  = None;
+		let mut swap_img: Option<SwapchainImage<'dev, img_state::Undefined, B>> = Some(swap_img);
+		let mut color_img: Option<SwapchainImage<'dev, img_state::ColorAttachment, B>> = None;
 		let mut pass_signals: HashMap<PassId, (u64, PassDomain)> = HashMap::new();
 		
-		let first_gfx = ordered_passes.iter()
-									  .find(|&&pid| passes.get(&pid).map(|p| p.domain == PassDomain::Graphics).unwrap_or(false))
-									  .copied();
-		let last_gfx = ordered_passes.iter().rev()
-									 .find(|&&pid| passes.get(&pid).map(|p| p.domain == PassDomain::Graphics).unwrap_or(false))
-									 .copied();
+		let first_gfx = ordered_passes.iter().find(|&&pid| passes.get(&pid).map(|p| p.domain == PassDomain::Graphics).unwrap_or(false)).copied();
+		let last_gfx = ordered_passes.iter().rev().find(|&&pid| passes.get(&pid).map(|p| p.domain == PassDomain::Graphics).unwrap_or(false)).copied();
 		
 		for &pass_id in &ordered_passes {
 			let pass = passes.remove(&pass_id).expect("compiled pass missing");
@@ -299,9 +337,18 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 			let pass_pipeline = pass.pipeline;
 			let pass_viewport = pass.viewport;
 			let pass_scissor = pass.scissor;
+			let stage = pass
+				.commands
+				.first()
+				.map(|_| match domain {
+					PassDomain::Graphics => Stage::ColorOutput,
+					PassDomain::Compute  => Stage::Compute,
+					PassDomain::Transfer => Stage::Transfer,
+				})
+				.unwrap_or(Stage::Bottom);
 			let commands = pass.commands;
 			
-			let mut waits: Vec<(B::Semaphore, u64)> = Vec::new();
+			let mut waits: Vec<(B::Semaphore, u64, Stage)> = Vec::new();
 			
 			let (lane_sem, lane_prev) = match domain {
 				PassDomain::Graphics => {
@@ -317,9 +364,9 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 					(l.timeline_handle(), l.last_signal_value())
 				}
 			};
-			
+		
 			if lane_prev > 0 {
-				waits.push((lane_sem, lane_prev));
+				waits.push((lane_sem, lane_prev, stage));
 			}
 			
 			for barrier in &barriers {
@@ -327,10 +374,14 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 					if let Some(&(src_val, src_domain)) = pass_signals.get(&barrier.from_pass) {
 						if src_domain != domain {
 							let src_sem = self.timeline_handle_for(src_domain);
-							if let Some(existing) = waits.iter_mut().find(|(s, _)| *s == src_sem) {
+							
+							let stage = barrier.dst_usage.stage();
+							
+							if let Some(existing) = waits.iter_mut().find(|(s, _, _)| *s == src_sem) {
 								existing.1 = existing.1.max(src_val);
+								existing.2 = merge_stage(existing.2, stage);
 							} else {
-								waits.push((src_sem, src_val));
+								waits.push((src_sem, src_val, stage));
 							}
 						}
 					}
@@ -385,12 +436,12 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 					
 					match pass_viewport {
 						Some((x, y, w, h)) => inside.set_viewport_rect(x, y, w, h),
-						None => inside.set_viewport_rect(0.0, 0.0, target.extent.width() as f32, target.extent.height() as f32, ),
+						None => inside.set_viewport_rect(0.0, 0.0, target.extent.width() as f32, target.extent.height() as f32),
 					}
 					
 					match pass_scissor {
 						Some((x, y, w, h)) => inside.set_scissor_rect(x, y, w, h),
-						None => inside.set_scissor_rect(0, 0, target.extent.width(), target.extent.height(), ),
+						None => inside.set_scissor_rect(0, 0, target.extent.width(), target.extent.height()),
 					}
 					
 					let mut active_layout: Option<B::PipelineLayout> = None;
@@ -412,18 +463,31 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 							PassCommand::DrawIndexed { index_count, instance_count, first_index } => {
 								inside.draw_indexed(*index_count, *instance_count, *first_index);
 							}
-							PassCommand::BindVertexBuffer(res_id) => {
-								let raw = resolve_buffer::<B>(&resources, *res_id);
-								inside.device().cmd_bind_vertex_buffers(inside.handle(), 0, &[raw], &[0]);
+							PassCommand::BindVertexBuffer(res_id, offset) => {
+								let (raw, base_offset) = resolve_buffer::<B>(&resources, *res_id);
+								
+								inside.device().cmd_bind_vertex_buffers(
+									inside.handle(),
+									0,
+									&[raw],
+									&[base_offset + *offset],
+								);
 							}
-							PassCommand::BindIndexBuffer(res_id) => {
-								let raw = resolve_buffer::<B>(&resources, *res_id);
-								inside.device().cmd_bind_index_buffer(inside.handle(), raw, 0, IndexType::U32);
+							
+							PassCommand::BindIndexBuffer(res_id, offset) => {
+								let (raw, base_offset) = resolve_buffer::<B>(&resources, *res_id);
+								
+								inside.device().cmd_bind_index_buffer(
+									inside.handle(),
+									raw,
+									base_offset + *offset,
+									IndexType::U32,
+								);
 							}
 							PassCommand::BindDescriptorSet(set_id) => {
 								let raw = descriptor_sets[set_id.0 as usize];
 								let layout = active_layout.expect("no pipeline bound before descriptor set");
-								inside.device().cmd_bind_descriptor_sets(inside.handle(), PipelineBindPoint::GRAPHICS, layout, 0, &[raw], &[], );
+								inside.device().cmd_bind_descriptor_sets(inside.handle(), PipelineBindPoint::GRAPHICS, layout, 0, &[raw], &[]);
 							}
 							PassCommand::PushConstants { range, data } => {
 								let layout = active_layout.expect("no pipeline bound before push constants");
@@ -433,7 +497,34 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 									&data[..range.size as usize],
 								);
 							}
-							PassCommand::Dispatch { .. } | PassCommand::CopyBuffer { .. } => {
+							PassCommand::CopyBuffer { src, dst, size, dst_offset } => {
+								let (src_buf, src_base) = resolve_buffer::<B>(&resources, *src);
+								let (dst_buf, dst_base) = resolve_buffer::<B>(&resources, *dst);
+								
+								inside.device().cmd_copy_buffer(
+									inside.handle(),
+									src_buf,
+									dst_buf,
+									src_base,
+									dst_base + *dst_offset,
+									*size,
+								);
+							}
+							
+							// REQUIRED
+							PassCommand::CopyBufferToImage { src, dst } => {
+								let (src_buf, src_base) = resolve_buffer::<B>(&resources, *src);
+								let (dst_img, extent)   = resolve_image::<B>(&resources, *dst);
+								
+								inside.device().cmd_copy_buffer_to_image(
+									inside.handle(),
+									src_buf,
+									src_base,   // FIX: real offset
+									dst_img,
+									extent.into(),     // FIX: real extent
+								);
+							}
+							PassCommand::Dispatch { .. }  => {
 								unreachable!("non-graphics command in graphics pass")
 							}
 						}
@@ -527,10 +618,16 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 					for command in &commands {
 						match command {
 							PassCommand::CopyBuffer { src, dst, size, dst_offset } => {
-								let src_raw = resolve_buffer::<B>(&resources, *src);
-								let dst_raw = resolve_buffer::<B>(&resources, *dst);
+								let (src_buf, src_base) = resolve_buffer::<B>(&resources, *src);
+								let (dst_buf, dst_base) = resolve_buffer::<B>(&resources, *dst);
+								
 								cmd.device().cmd_copy_buffer(
-									cmd.handle(), src_raw, dst_raw, 0, *dst_offset, *size,
+									cmd.handle(),
+									src_buf,
+									dst_buf,
+									src_base,
+									dst_base + *dst_offset,
+									*size,
 								);
 							}
 							_ => unreachable!("non-transfer command in transfer pass"),
@@ -555,8 +652,7 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 		if first_gfx.is_none() {
 			if let Some(ps) = &present_sync {
 				let lane = self.graphics.as_mut().expect("no graphics lane");
-				let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?
-					.begin().map_err(|e| GraphError::backend(e))?;
+				let cmd = lane.allocate().map_err(|e| GraphError::backend(e))?.begin().map_err(|e| GraphError::backend(e))?;
 				
 				let si = swap_img.take().expect("swapchain image not consumed");
 				let ci = si.into_color_attachment(&cmd);
@@ -575,7 +671,7 @@ impl<'dev, B: Backend> Executor<'dev, B> {
 				let executable = cmd.end().map_err(|e| GraphError::backend(e))?;
 				
 				let waits = [SemaphoreSubmit { semaphore: ps.wait_acquire, value: 0, stage: Stage::ColorOutput }];
-				let signals = [SemaphoreSubmit { semaphore: ps.signal_render_finished, value: 0, stage: Stage::All }];
+				let signals = [SemaphoreSubmit { semaphore: ps.signal_render_finished, value: 0, stage: Stage::Bottom }];
 				final_graphics_val = lane.submit_with_binary(
 					self.device, executable, &[], &waits, &signals,
 				).map_err(|e| GraphError::backend(e))?;

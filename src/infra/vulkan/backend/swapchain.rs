@@ -7,6 +7,7 @@ use crate::infra::platform::Surface;
 use crate::infra::vulkan::backend::VulkanBackend;
 use crate::infra::vulkan::backend::VulkanDevice;
 use ash::vk;
+use tracing::{debug, info, trace, warn};
 
 pub struct Swapchain<'dev> {
 	device: &'dev VulkanDevice,
@@ -19,28 +20,25 @@ pub struct Swapchain<'dev> {
 	extent: vk::Extent2D,
 }
 
-/// Deferred-destruction handle. Drop only after GPU timeline passes retire_value.
 pub struct RetiredSwapchainResources<'dev> {
 	loader: ash::khr::swapchain::Device,
 	handle: vk::SwapchainKHR,
 	_image_views: Vec<ImageView<'dev, VulkanBackend>>,
-	_render_semaphores: Vec<BinarySemaphore<'dev, VulkanBackend>>,
 }
 
 impl Drop for RetiredSwapchainResources<'_> {
 	fn drop(&mut self) {
-		// Views and semaphores must die before the swapchain handle.
+		debug!(handle = ?self.handle, "Dropping RetiredSwapchainResources");
 		self._image_views.clear();
-		self._render_semaphores.clear();
 		unsafe { self.loader.destroy_swapchain(self.handle, None); }
 	}
 }
 
-impl<'dev> Swapchain<'dev, > {
+impl<'dev> Swapchain<'dev> {
 	pub(crate) fn required_device_extensions() -> Vec<*const i8> {
 		vec![ash::khr::swapchain::NAME.as_ptr()]
 	}
-
+	
 	pub(crate) fn new(
 		instance: &VulkanInstance,
 		device: &'dev VulkanDevice,
@@ -50,10 +48,9 @@ impl<'dev> Swapchain<'dev, > {
 		height: u32,
 	) -> Result<Self, vk::Result> {
 		let caps = unsafe { surface.capabilities(physical.handle())? };
-
 		let composite_alpha = select_composite_alpha(&caps);
 		let formats = unsafe { surface.formats(physical.handle())? };
-
+		
 		let format = formats
 			.iter()
 			.find(|f| {
@@ -65,7 +62,14 @@ impl<'dev> Swapchain<'dev, > {
 			.ok_or(vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
 		let extent = resolve_extent(&caps, width, height);
 		let image_count = select_image_count(&caps);
-
+		
+		info!(
+              width = extent.width,
+              height = extent.height,
+              image_count,
+              "Creating swapchain"
+          );
+		
 		let create_info = vk::SwapchainCreateInfoKHR::default()
 			.surface(surface.handle())
 			.min_image_count(image_count)
@@ -83,52 +87,63 @@ impl<'dev> Swapchain<'dev, > {
 			.present_mode(vk::PresentModeKHR::FIFO)
 			.clipped(true)
 			.old_swapchain(vk::SwapchainKHR::null());
-
+		
 		let device_handle = &device.inner;
 		let loader = ash::khr::swapchain::Device::new(
 			instance.instance(),
 			device_handle,
 		);
-
+		
 		let swapchain = unsafe { loader.create_swapchain(&create_info, None)? };
 		let images = unsafe { loader.get_swapchain_images(swapchain)? };
-
+		
+		debug!(actual_image_count = images.len(), "Swapchain images acquired");
+		
 		let image_views: Result<Vec<_>, _> = images
 			.iter()
 			.map(|&image| ImageView::color_2d(device, image, Format(format.format.as_raw())))
 			.collect();
 		let image_views = image_views?;
-
+		
 		let render_semaphores: Result<Vec<_>, _> = (0..images.len())
 			.map(|_| BinarySemaphore::new(device))
 			.collect();
 		let render_semaphores = render_semaphores?;
-
+		
 		Ok(Self { device, loader, swapchain, images, image_views, render_semaphores, format, extent })
 	}
-
+	
 	pub(crate) fn acquire_next(
 		&self,
 		semaphore: vk::Semaphore,
 	) -> Result<(u32, bool), vk::Result> {
-		unsafe {
+		trace!(semaphore = ?semaphore, "vkAcquireNextImageKHR");
+		let result = unsafe {
 			self.loader.acquire_next_image(
 				self.swapchain, u64::MAX, semaphore, vk::Fence::null(),
 			)
+		};
+		match &result {
+			Ok((idx, suboptimal)) => {
+				trace!(image_index = idx, suboptimal, "Acquire result");
+			}
+			Err(e) => {
+				warn!(error = ?e, "Acquire failed");
+			}
 		}
+		result
 	}
-
-	/// Returns retired resources for deferred destruction.
+	#[deprecated]
 	pub fn recreate(
 		&mut self,
 		physical: &PhysicalDevice,
 		surface: &Surface,
 		width: u32,
 		height: u32,
-	) -> Result<RetiredSwapchainResources<'dev>, vk::Result> {
+	) -> Result<(RetiredSwapchainResources<'dev>, Vec<BinarySemaphore<'dev, VulkanBackend>>), vk::Result> {
 		self.recreate_with_present_mode(physical, surface, width, height, vk::PresentModeKHR::FIFO)
 	}
-
+	
 	pub fn recreate_with_present_mode(
 		&mut self,
 		physical: &PhysicalDevice,
@@ -136,22 +151,22 @@ impl<'dev> Swapchain<'dev, > {
 		width: u32,
 		height: u32,
 		present_mode: vk::PresentModeKHR,
-	)-> Result<RetiredSwapchainResources<'dev>, vk::Result> {
+	) -> Result<(RetiredSwapchainResources<'dev>, Vec<BinarySemaphore<'dev, VulkanBackend>>), vk::Result> {
 		let supported = unsafe { surface.present_modes(physical.handle())? };
-		let present_mode = if supported.contains(&present_mode) {
-			present_mode
-		} else if supported.contains(&vk::PresentModeKHR::MAILBOX) {
-			vk::PresentModeKHR::MAILBOX
-		} else {
-			vk::PresentModeKHR::FIFO
-		};
-
 		let caps = unsafe { surface.capabilities(physical.handle())? };
 		let composite_alpha = select_composite_alpha(&caps);
 		let extent = resolve_extent(&caps, width, height);
 		let image_count = select_image_count(&caps);
 		let old_swapchain = self.swapchain;
-
+		
+		info!(
+              width = extent.width,
+              height = extent.height,
+              image_count,
+              old_handle = ?old_swapchain,
+              "Recreating swapchain"
+          );
+		
 		let create_info = vk::SwapchainCreateInfoKHR::default()
 			.surface(surface.handle())
 			.min_image_count(image_count)
@@ -169,66 +184,87 @@ impl<'dev> Swapchain<'dev, > {
 			.present_mode(present_mode)
 			.clipped(true)
 			.old_swapchain(old_swapchain);
-
+		
 		let new_swapchain = unsafe { self.loader.create_swapchain(&create_info, None)? };
 		let images = unsafe { self.loader.get_swapchain_images(new_swapchain)? };
-
+		
+		debug!(
+              new_handle = ?new_swapchain,
+              actual_image_count = images.len(),
+              "Swapchain recreated"
+          );
+		
 		let image_views: Result<Vec<_>, _> = images
 			.iter()
 			.map(|&image| ImageView::color_2d(self.device, image, Format(self.format.format.as_raw())))
 			.collect();
 		let image_views = image_views?;
-
+		
 		let new_render_semaphores: Result<Vec<_>, _> = (0..images.len())
 			.map(|_| BinarySemaphore::new(self.device))
 			.collect();
 		let new_render_semaphores = new_render_semaphores?;
-
+		
 		let old_views = std::mem::replace(&mut self.image_views, image_views);
 		let old_sems  = std::mem::replace(&mut self.render_semaphores, new_render_semaphores);
-
+		
+		debug!(
+              retired_views = old_views.len(),
+              condemned_sems = old_sems.len(),
+              "Old resources separated"
+          );
+		
 		let retired = RetiredSwapchainResources {
 			loader: self.loader.clone(),
 			handle: old_swapchain,
 			_image_views: old_views,
-			_render_semaphores: old_sems,
 		};
-
+		
 		self.swapchain = new_swapchain;
 		self.images = images;
 		self.extent = extent;
-		Ok(retired)
+		
+		Ok((retired, old_sems))
 	}
-
-	/// Indexed by image, not frame slot — presentation engine holds until re-acquire.
+	
 	pub(crate) fn render_semaphore(&self, image_index: u32) -> vk::Semaphore {
 		self.render_semaphores[image_index as usize].handle()
 	}
-
+	
 	pub(crate) fn format(&self) -> vk::Format { self.format.format }
 	pub(crate) fn extent(&self) -> vk::Extent2D { self.extent }
 	pub(crate) fn image(&self, index: u32) -> vk::Image { self.images[index as usize] }
 	pub(crate) fn image_view(&self, index: u32) -> &ImageView<'_, VulkanBackend> { &self.image_views[index as usize] }
-
+	
 	pub(crate) fn present_raw(
 		&self,
 		queue: vk::Queue,
 		index: u32,
 		wait_semaphore: vk::Semaphore,
 	) -> Result<bool, vk::Result> {
+		trace!(image_index = index, semaphore = ?wait_semaphore, "vkQueuePresent");
+		
 		let swapchains = [self.swapchain];
 		let indices = [index];
 		let wait = [wait_semaphore];
-
+		
 		let present_info = vk::PresentInfoKHR::default()
 			.wait_semaphores(&wait)
 			.swapchains(&swapchains)
 			.image_indices(&indices);
-
+		
 		unsafe {
 			match self.loader.queue_present(queue, &present_info) {
-				Ok(suboptimal) => Ok(suboptimal),
-				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => Ok(true),
+				Ok(suboptimal) => {
+					if suboptimal {
+						debug!(image_index = index, "Present returned suboptimal");
+					}
+					Ok(suboptimal)
+				}
+				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+					trace!("Present returned ERROR_OUT_OF_DATE_KHR");
+					Ok(true)
+				}
 				Err(e) => Err(e),
 			}
 		}
@@ -237,8 +273,8 @@ impl<'dev> Swapchain<'dev, > {
 
 impl Drop for Swapchain<'_> {
 	fn drop(&mut self) {
+		debug!(handle = ?self.swapchain, "Dropping Swapchain");
 		unsafe {
-			// Views reference swapchain images — destroy before swapchain.
 			self.image_views.clear();
 			self.loader.destroy_swapchain(self.swapchain, None);
 		}
@@ -265,9 +301,7 @@ fn resolve_extent(caps: &vk::SurfaceCapabilitiesKHR, width: u32, height: u32) ->
 			width:  width.clamp(caps.min_image_extent.width,  caps.max_image_extent.width),
 			height: height.clamp(caps.min_image_extent.height, caps.max_image_extent.height),
 		}
-		
 	}
-	
 }
 
 fn select_image_count(caps: &vk::SurfaceCapabilitiesKHR) -> u32 {

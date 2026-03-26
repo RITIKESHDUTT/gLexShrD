@@ -379,9 +379,7 @@ impl WaylandWindowImpl {
 								continue;
 							}
 							KeyCode::F11 => {
-						
 								self.inner.toggle_fullscreen();
-								self.pending_configure = true;
 								continue;
 							}
 							
@@ -406,6 +404,8 @@ impl WaylandWindowImpl {
 			}
 		}
 		events.push(Event::MainEventsCleared);
+		
+		self.inner.display.flush();
 		(cf, events)
 	}
 	pub fn take_pending_configure(&mut self) -> bool {

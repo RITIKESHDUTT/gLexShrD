@@ -755,3 +755,13 @@ pub struct ShaderConfig<B: Backend> {
 	pub frag: B::ShaderModule,
 	pub entry: &'static CStr,
 }
+
+impl From<Extent2D> for Extent3D {
+	fn from(e: Extent2D) -> Self {
+		Self {
+			width: e.width(),
+			height: e.height(),
+			depth: 1,
+		}
+	}
+}

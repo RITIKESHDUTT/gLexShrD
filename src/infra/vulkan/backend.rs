@@ -4,7 +4,6 @@ mod physical_device;
 mod entry;
 mod instance;
 mod queue;
-mod staging;
 mod swapchain;
 pub mod error;
 

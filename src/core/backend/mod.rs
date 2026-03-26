@@ -2,16 +2,18 @@ pub mod types;
 mod helpers_for_types;
 pub use helpers_for_types::{data_size, push_range, push_size, shader_stages, vertex_attr, vertex_binding, vertex_config, vertex_stride};
 use std::error::Error;
-
+use std::fmt::Debug;
 use crate::domain::{Access, ImageLayout, Stage};
 use types::*;
 
 // ── Backend Trait ───────────────────────────────────────────
-pub trait Backend: 'static + Sized {
+pub trait Backend: 'static + Sized
+	where Self::Allocation: Allocation<Memory = Self::DeviceMemory>,
+{
 	type Device: DeviceOps<Self> + CommandOps<Self> + Clone;
-	type Buffer: Copy + Eq + std::fmt::Debug;
-	type Image: Copy + Eq + std::fmt::Debug;
-	type ImageView: Copy + Eq + std::fmt::Debug;
+	type Buffer: Copy + Eq + Debug + Send + Default;
+	type Image: Copy + Eq + Debug + Send;
+	type ImageView: Copy + Eq + Debug + Send;
 	type CommandBuffer: Copy;
 	type CommandPool: Copy;
 	type Pipeline: Copy;
@@ -20,14 +22,15 @@ pub trait Backend: 'static + Sized {
 	type Semaphore: Copy + Eq;
 	type Fence: Copy;
 	type Queue: Copy;
-	type DeviceMemory: Copy + Eq;
-	type DescriptorSet: Copy;
+	type DeviceMemory: Copy + Debug + Send + Eq;
+	type DescriptorSet: Copy + Eq + Debug + Send;
 	type DescriptorSetLayout: Copy;
 	type DescriptorPool: Copy;
 	type Sampler: Copy;
 	type Error: Error;
 	type Format: Copy + PartialEq + From<crate::core::types::Format>;
 	
+	type Allocation: Allocation;
 	fn image_from_raw(raw: u64) -> Self::Image;
 	fn buffer_from_raw(raw: u64) -> Self::Buffer;
 	fn buffer_handle(buf: Self::Buffer) -> u64;
@@ -123,8 +126,15 @@ pub trait CommandOps<B: Backend> {
 	
 	// Transfer
 	fn cmd_copy_buffer(&self, cmd: B::CommandBuffer, src: B::Buffer, dst: B::Buffer, src_offset: u64, dst_offset: u64,
-		size: u64);
-	fn cmd_copy_buffer_to_image(&self, cmd: B::CommandBuffer, src: B::Buffer, dst: B::Image, extent: Extent3D);
+					   size: u64);
+	fn cmd_copy_buffer_to_image(
+		&self,
+		cmd: B::CommandBuffer,
+		src: B::Buffer,
+		src_offset: u64,
+		dst: B::Image,
+		extent: Extent3D
+	);
 	
 	// Binding
 	fn cmd_bind_vertex_buffers(&self, cmd: B::CommandBuffer, first: u32, buffers: &[B::Buffer], offsets: &[u64]);
@@ -134,7 +144,7 @@ pub trait CommandOps<B: Backend> {
 	fn cmd_bind_pipeline(&self, cmd: B::CommandBuffer, bind_point: PipelineBindPoint, pipeline: B::Pipeline);
 	fn cmd_draw(&self, cmd: B::CommandBuffer, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32);
 	fn cmd_draw_indexed(&self, cmd: B::CommandBuffer, index_count: u32, instance_count: u32, first_index: u32,
-		vertex_offset: i32, first_instance: u32);
+						vertex_offset: i32, first_instance: u32);
 	fn cmd_dispatch(&self, cmd: B::CommandBuffer, x: u32, y: u32, z: u32);
 	fn cmd_begin_rendering(&self, cmd: B::CommandBuffer, desc: &RenderingDesc<B>);
 	fn cmd_end_rendering(&self, cmd: B::CommandBuffer);
@@ -200,3 +210,22 @@ pub struct DepthAttachment<B: Backend> {
 	pub store_op: AttachmentStoreOp,
 	pub clear_depth: f32,
 }
+
+/// An owned GPU memory ticket. Dropped when the resource is destroyed,
+/// triggering return to the arena. Must have `finalize_lifetime` called
+/// before drop to record when the GPU is done with it.
+pub trait Allocation: Send {
+	type Memory: Copy + Debug + Send + Eq;
+	type Buffer: Copy + Debug + Eq;
+	fn memory(&self) -> Self::Memory;
+	fn finalize_lifetime(&mut self, t: u64);
+	// MEMORY SPACE
+	fn memory_offset(&self) -> u64;
+	// LOGICAL SIZE
+	fn size(&self)   -> u64;
+	// INTERNAL (allocator only)
+	fn block_idx(&self) -> u32;
+}
+
+
+//offset() + size() <= underlying VkDeviceMemory allocation

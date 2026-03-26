@@ -1,3 +1,4 @@
+use crate::domain::PassDomain;
 use super::ResourceId;
 
 #[derive(thiserror::Error, Debug)]
@@ -6,6 +7,8 @@ pub enum GraphError {
 	CycleDetected,
 	#[error("Resource {0:?} not found")]
 	ResourceNotFound(ResourceId),
+	#[error("No lane attached for domain {0:?}")]
+	MissingLane(PassDomain),
 	#[error("Internal rendering backend error: {0}")]
 	BackendFailure(String),
 }
